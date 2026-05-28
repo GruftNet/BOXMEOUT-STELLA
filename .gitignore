@@ -70,6 +70,16 @@ test-results/
 playwright-report/
 playwright/.cache/
 
+# ─── Test snapshots ──────────────────────────────────────────
+**/__snapshots__/
+*.snap
+frontend/e2e/snapshots/
+frontend/e2e/test-results/
+
+# ─── Playwright artifacts ────────────────────────────────────
+blob-report/
+playwright/.auth/
+
 # ─── Docker ──────────────────────────────────────────────────
 .docker/
 

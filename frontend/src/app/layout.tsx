@@ -16,6 +16,10 @@ export const metadata: Metadata = {
     template: '%s — BoxMeOut',
   },
   description: 'Decentralized boxing prediction market powered by Stellar Soroban smart contracts.',
+  openGraph: {
+    siteName: 'BoxMeOut',
+    type: 'website',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }): JSX.Element {
