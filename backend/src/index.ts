@@ -3,6 +3,7 @@ import pinoHttp from "pino-http";
 import { validateEnv } from "./config/env";
 import { setupSwagger } from "./config/swagger";
 import { errorMiddleware } from "./middleware/error.middleware";
+import { initSentry, applySentryRequestHandler } from "./middleware/sentry.middleware";
 import { rateLimit } from "./middleware/rate-limit.middleware";
 import { requestLogging } from "./middleware/request-logging.middleware";
 import { AppError } from "./utils/AppError";
@@ -16,6 +17,9 @@ import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolutio
 
 // Validate environment variables on startup
 const env = validateEnv();
+
+// Initialise Sentry before any other code (captures unhandled rejections/exceptions)
+initSentry(env.SENTRY_DSN, env.NODE_ENV);
 
 const app = express();
 
@@ -82,6 +86,9 @@ app.post("/api/users", (req, res, next) => {
 app.use((_req, _res, next) => {
   next(AppError.notFound("Route not found"));
 });
+
+// Sentry error handler - must be before errorMiddleware
+applySentryRequestHandler(app);
 
 // Error handler - must be LAST
 app.use(errorMiddleware);
