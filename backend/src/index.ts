@@ -13,6 +13,7 @@ import adminRouter from "./routes/admin.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
+import { initActivityFeed } from "./websocket/realtime";
 
 // Validate environment variables on startup
 const env = validateEnv();
@@ -87,7 +88,7 @@ app.use((_req, _res, next) => {
 app.use(errorMiddleware);
 
 const PORT = env.PORT;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
   if (env.NODE_ENV === 'development') {
     logger.info(`Swagger UI available at http://localhost:${PORT}/api/docs`);
@@ -95,5 +96,7 @@ app.listen(PORT, () => {
   startAutoResolutionCron();
   startAutoLockCron();
 });
+
+initActivityFeed(server);
 
 export default app;
