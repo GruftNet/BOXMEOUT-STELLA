@@ -10,55 +10,71 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ContractError {
     // ── Authorization ──────────────────────────────────────
-    /// Caller is not the contract admin
+    /// Caller is not authorized to perform this action
     Unauthorized = 1,
+    /// Caller is not the contract admin
+    NotAdmin = 4,
     /// Caller is not a whitelisted oracle
-    OracleNotWhitelisted = 2,
+    NotOracle = 5,
     /// Caller is not the factory contract
     NotFactory = 3,
+    /// Market contract is not registered or approved
+    UnregisteredMarket = 6,
 
     // ── Market State ───────────────────────────────────────
     /// Requested market ID does not exist
     MarketNotFound = 10,
-    /// Market is not in the expected status for this operation
-    InvalidMarketStatus = 11,
-    /// Betting window has closed (too close to fight start)
-    BettingClosed = 12,
+    /// Market is not open for betting
+    MarketNotOpen = 11,
+    /// Market must be resolved before this operation
+    MarketNotResolved = 12,
+    /// Market has been cancelled and cannot perform this operation
+    MarketCancelled = 13,
     /// Market has already been initialized
-    AlreadyInitialized = 13,
+    AlreadyInitialized = 14,
+    /// Provided time range or timestamps are invalid
+    InvalidTimeRange = 15,
+    /// Provided market configuration is invalid
+    InvalidMarketParameters = 16,
 
     // ── Bet Validation ─────────────────────────────────────
-    /// Bet amount is below config.min_bet
-    BetTooSmall = 20,
-    /// Bet amount exceeds config.max_bet
-    BetTooLarge = 21,
-    /// Bettor has already claimed winnings for this market
-    AlreadyClaimed = 22,
+    /// Bet amount is below minimum allowed
+    BetTooLow = 20,
+    /// Transfer amount is insufficient for the requested operation
+    InsufficientAmount = 21,
+    /// Bettor has already placed a bet in this market
+    AlreadyBet = 22,
+    /// Bettor has already claimed winnings or refund
+    AlreadyClaimed = 23,
+    /// Invalid outcome for the current market state
+    InvalidOutcome = 24,
     /// Bettor placed no bets in this market
-    NoBetsFound = 23,
+    NoBetsFound = 25,
 
     // ── Oracle / Resolution ────────────────────────────────
     /// Oracle signature verification failed
     InvalidOracleSignature = 30,
-    /// Resolution attempted outside of resolution_window
+    /// Resolution attempted outside of the allowed window
     ResolutionWindowExpired = 31,
-    /// A conflicting oracle report already exists
+    /// Two or more conflicting oracle reports were submitted
     ConflictingOracleReport = 32,
 
     // ── Treasury ───────────────────────────────────────────
-    /// Caller is not an approved market contract
-    MarketNotApproved = 40,
-    /// Withdrawal would exceed daily limit
+    /// Fee withdrawals are temporarily paused
+    WithdrawalsPaused = 40,
+    /// Withdrawal exceeds configured daily or per-transaction limits
     DailyWithdrawalLimitExceeded = 41,
-    /// Insufficient treasury balance for withdrawal
+    /// Not enough balance is available for withdrawal
     InsufficientBalance = 42,
+    /// Market is not approved to deposit or receive fees
+    MarketNotApproved = 43,
 
     // ── Factory ────────────────────────────────────────────
-    /// Factory is paused; market creation is disabled
+    /// Factory is paused; new market creation is disabled
     FactoryPaused = 50,
     /// Oracle address already in whitelist
     OracleAlreadyWhitelisted = 51,
-    /// Vec of market IDs exceeds the maximum allowed (20)
+    /// Too many markets were requested in one query
     TooManyMarkets = 52,
 
     // ── Reentrancy ─────────────────────────────────────────

@@ -42,9 +42,9 @@ impl MarketFactory {
         let admin: Address = env
             .storage().persistent()
             .get(&ADMIN)
-            .ok_or(ContractError::Unauthorized)?;
+            .ok_or(ContractError::NotAdmin)?;
         if *caller != admin {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
         Ok(())
     }
@@ -122,10 +122,10 @@ impl MarketFactory {
     /// Creates a new market for a boxing match.
     ///
     /// # Errors
-    /// - `InvalidMarketStatus`: Fight is in the past or fighter names are empty
-    /// - `InvalidConfig`: max_bet < min_bet in the provided config
-    /// - `BetTooSmall`: min_bet is zero
-    /// - `Unauthorized`: fee_bps exceeds 1000
+    /// - `InvalidTimeRange`: Fight start time is in the past
+    /// - `InvalidMarketParameters`: Fighter names are missing or market config is invalid
+    /// - `BetTooLow`: min_bet is zero
+    /// - `InvalidMarketParameters`: fee_bps exceeds 1000
     /// - `FactoryPaused`: Factory is paused
     /// - `WasmHashNotSet`: Admin has not yet called update_market_wasm
     pub fn create_market(
@@ -140,28 +140,31 @@ impl MarketFactory {
         Self::require_not_paused(&env)?;
 
         if fight.scheduled_at <= env.ledger().timestamp() {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::InvalidTimeRange);
         }
         if fight.fighter_a.len() == 0 || fight.fighter_b.len() == 0 {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::InvalidMarketParameters);
         }
 
-        // ── Config validation ───────────────────────────────
+        // ── Config validation ─────────────────────────────
         if config.min_bet == 0 {
-            return Err(ContractError::BetTooSmall);
+            return Err(ContractError::BetTooLow);
+        }
+        if config.max_bet < config.min_bet {
+            return Err(ContractError::InvalidMarketParameters);
         }
 
         // Resolve effective fee: use override if provided (capped at 1000 bps), else config value
         let effective_fee_bps = match fee_bps {
             Some(f) => {
                 if f > 1000 {
-                    return Err(ContractError::Unauthorized);
+                    return Err(ContractError::InvalidMarketParameters);
                 }
                 f
             }
             None => {
                 if config.fee_bps > 1000 {
-                    return Err(ContractError::Unauthorized);
+                    return Err(ContractError::InvalidMarketParameters);
                 }
                 config.fee_bps
             }
@@ -298,10 +301,10 @@ impl MarketFactory {
     pub fn remove_open_market(env: Env, caller: Address, market_id: u64) -> Result<(), ContractError> {
         caller.require_auth();
 
-        let admin: Address = env.storage().persistent().get(&ADMIN).ok_or(ContractError::Unauthorized)?;
+        let admin: Address = env.storage().persistent().get(&ADMIN).ok_or(ContractError::NotAdmin)?;
         let oracles: Vec<Address> = env.storage().persistent().get(&ORACLE_WHITELIST).unwrap_or_else(|| Vec::new(&env));
         if caller != admin && !oracles.contains(caller.clone()) {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
 
         // Verify market is no longer Open
@@ -313,7 +316,7 @@ impl MarketFactory {
             .map_err(|_| ContractError::MarketNotFound)?
             .map_err(|_| ContractError::MarketNotFound)?;
         if state.status == MarketStatus::Open {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::MarketNotOpen);
         }
 
         let open: Vec<u64> = env.storage().persistent().get(&OPEN_MARKETS).unwrap_or_else(|| Vec::new(&env));
@@ -379,7 +382,7 @@ impl MarketFactory {
     /// Transfers admin privileges to a new address.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not the current admin
+    /// - `NotAdmin`: Caller is not the current admin
     pub fn transfer_admin(
         env: Env,
         current_admin: Address,
@@ -391,7 +394,7 @@ impl MarketFactory {
         let old_admin: Address = env
             .storage().persistent()
             .get(&ADMIN)
-            .ok_or(ContractError::Unauthorized)?;
+            .ok_or(ContractError::NotAdmin)?;
         env.storage().persistent().set(&ADMIN, &new_admin);
         boxmeout_shared::emit_admin_transferred(&env, old_admin, new_admin);
         Ok(())
@@ -400,7 +403,7 @@ impl MarketFactory {
     /// Pauses the factory, preventing new market creation.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not the admin
+    /// - `NotAdmin`: Caller is not the admin
     pub fn pause_factory(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
@@ -411,7 +414,7 @@ impl MarketFactory {
     /// Unpauses the factory, allowing new market creation.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not the admin
+    /// - `NotAdmin`: Caller is not the admin
     pub fn unpause_factory(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
@@ -424,10 +427,15 @@ impl MarketFactory {
         env.storage().persistent().get(&PAUSED).unwrap_or(false)
     }
 
+    /// Returns all market IDs currently tracked as open.
+    pub fn get_all_market_ids(env: Env) -> Vec<u64> {
+        env.storage().persistent().get(&OPEN_MARKETS).unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// Updates the default market configuration.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not the admin
+    /// - `NotAdmin`: Caller is not the admin
     pub fn update_default_config(
         env: Env,
         admin: Address,

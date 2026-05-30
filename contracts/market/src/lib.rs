@@ -176,9 +176,9 @@ impl Market {
     /// Places a bet on behalf of bettor.
     ///
     /// # Errors
-    /// - `InvalidMarketStatus`: Market is not open or fight is in the past
-    /// - `BettingClosed`: Betting window has closed
-    /// - `BetTooSmall`: Bet amount is below minimum
+    /// - `MarketNotOpen`: Market is not open or fight is in the past
+    /// - `InvalidTimeRange`: Betting window has not opened or deadline is invalid
+    /// - `BetTooLow`: Bet amount is below minimum
     /// - `BetTooLarge`: Bet amount exceeds maximum
     ///
     /// # Security (CEI enforced)
@@ -199,7 +199,7 @@ impl Market {
         let state = Self::load_state(&env)?;
 
         if state.status != MarketStatus::Open {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::MarketNotOpen);
         }
 
         let lock_threshold = state.fight.scheduled_at
@@ -209,7 +209,7 @@ impl Market {
         }
 
         if amount < state.config.min_bet {
-            return Err(ContractError::BetTooSmall);
+            return Err(ContractError::BetTooLow);
         }
         if amount > state.config.max_bet {
             return Err(ContractError::BetTooLarge);
@@ -235,7 +235,10 @@ impl Market {
         };
 
         let mut bets = Self::load_bets(&env, &bettor);
-        let is_first_bet = bets.is_empty();
+        if !bets.is_empty() {
+            return Err(ContractError::AlreadyBet);
+        }
+        let is_first_bet = true;
         bets.push_back(bet.clone());
         Self::save_bets(&env, &bettor, &bets);
 
@@ -264,9 +267,9 @@ impl Market {
     /// Locks the market when the fight is about to start.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not a whitelisted oracle or admin
-    /// - `InvalidMarketStatus`: Market is not open or already locked
-    /// - `BettingClosed`: Lock threshold has not been reached yet
+    /// - `NotOracle`: Caller is not a whitelisted oracle or admin
+    /// - `MarketNotOpen`: Market is not open or already locked
+    /// - `InvalidTimeRange`: Lock threshold has not been reached yet
     pub fn lock_market(env: Env, caller: Address) -> Result<(), ContractError> {
         // CHECKS
         caller.require_auth();
@@ -280,7 +283,7 @@ impl Market {
         let is_admin = caller == factory;
         let is_oracle = Self::is_oracle_whitelisted(&env, &caller)?;
         if !is_admin && !is_oracle {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotOracle);
         }
 
         let mut state = Self::load_state(&env)?;
@@ -291,7 +294,7 @@ impl Market {
         let lock_threshold = state.fight.scheduled_at
             .saturating_sub(state.config.lock_before_secs);
         if env.ledger().timestamp() < lock_threshold {
-            return Err(ContractError::BettingClosed);
+            return Err(ContractError::InvalidTimeRange);
         }
 
         // EFFECTS
@@ -308,8 +311,8 @@ impl Market {
     /// Submits an oracle report for market resolution using 2-of-3 consensus.
     ///
     /// # Errors
-    /// - `OracleNotWhitelisted`: Caller is not a whitelisted oracle
-    /// - `InvalidMarketStatus`: Market is not locked
+    /// - `NotOracle`: Caller is not a whitelisted oracle
+    /// - `MarketNotOpen`: Market is not locked
     /// - `ResolutionWindowExpired`: Resolution deadline has passed
     /// - `InvalidOracleSignature`: Signature verification failed
     /// - `Unauthorized`: Oracle has already submitted a report
@@ -323,7 +326,7 @@ impl Market {
         Self::require_not_paused(&env)?;
 
         if !Self::is_oracle_whitelisted(&env, &oracle)? {
-            return Err(ContractError::OracleNotWhitelisted);
+            return Err(ContractError::NotOracle);
         }
 
         let mut state = Self::load_state(&env)?;
@@ -414,7 +417,8 @@ impl Market {
     /// Claims winnings for a bettor who backed the winning outcome.
     ///
     /// # Errors
-    /// - `InvalidMarketStatus`: Market is not resolved
+    /// - `MarketNotResolved`: Market is not resolved
+    /// - `InvalidOutcome`: Market outcome is invalid for payout
     /// - `NoBetsFound`: Bettor has no bets in this market
     /// - `AlreadyClaimed`: Bettor has already claimed winnings
     ///
@@ -437,20 +441,23 @@ impl Market {
         // Reload state fresh from storage (never use a stale copy)
         let state = Self::load_state(&env)?;
 
+        if state.status == MarketStatus::Cancelled {
+            return Err(ContractError::MarketCancelled);
+        }
         if state.status != MarketStatus::Resolved {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::MarketNotResolved);
         }
 
         let winning_outcome = match state.outcome.clone() {
             OptionalOutcome::Some(o) => o,
-            OptionalOutcome::None => return Err(ContractError::InvalidMarketStatus),
+            OptionalOutcome::None => return Err(ContractError::InvalidOutcome),
         };
 
         let winning_side = match &winning_outcome {
             Outcome::FighterA  => BetSide::FighterA,
             Outcome::FighterB  => BetSide::FighterB,
             Outcome::Draw      => BetSide::Draw,
-            Outcome::NoContest => return Err(ContractError::InvalidMarketStatus),
+            Outcome::NoContest => return Err(ContractError::InvalidOutcome),
         };
 
         let bets = Self::load_bets(&env, &bettor);
@@ -482,15 +489,15 @@ impl Market {
         let fee = state.total_pool
             .checked_mul(state.config.fee_bps as i128)
             .and_then(|v| v.checked_div(10_000))
-            .ok_or(ContractError::Unauthorized)?;
+            .ok_or(ContractError::InsufficientAmount)?;
         let net_pool = state.total_pool
             .checked_sub(fee)
-            .ok_or(ContractError::Unauthorized)?;
+            .ok_or(ContractError::InsufficientAmount)?;
         let payout = if winning_pool > 0 {
             bettor_stake
                 .checked_mul(net_pool)
                 .and_then(|v| v.checked_div(winning_pool))
-                .ok_or(ContractError::Unauthorized)?
+                .ok_or(ContractError::InsufficientAmount)?
         } else {
             0
         };
@@ -637,7 +644,7 @@ impl Market {
         let is_admin = caller == factory;
         let is_oracle = Self::is_oracle_whitelisted(&env, &caller)?;
         if !is_admin && !is_oracle {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotOracle);
         }
 
         let mut state = Self::load_state(&env)?;
@@ -674,7 +681,7 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
 
         let mut state = Self::load_state(&env)?;
@@ -710,20 +717,7 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-            return Err(ContractError::Unauthorized);
-        }
-
-        let mut state = Self::load_state(&env)?;
-        if state.status != MarketStatus::Disputed {
-            return Err(ContractError::InvalidMarketStatus);
-        }
-
-        state.outcome = OptionalOutcome::Some(final_outcome.clone());
-        state.status = MarketStatus::Resolved;
-        state.oracle_used = OptionalOracleRole::Some(OracleRole::Admin);
-        Self::save_state(&env, &state);
-
-        boxmeout_shared::emit_dispute_resolved(&env, state.market_id, final_outcome);
+              return Err(ContractError::NotAdmin);
         Ok(())
     }
 
@@ -951,7 +945,7 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
         env.storage().instance().set(&PAUSED, &true);
         Ok(())
@@ -965,7 +959,7 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
         env.storage().instance().set(&PAUSED, &false);
         Ok(())
@@ -982,7 +976,7 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-            return Err(ContractError::Unauthorized);
+            return Err(ContractError::NotAdmin);
         }
         env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
         boxmeout_shared::emit_contract_upgraded(&env, new_wasm_hash);
