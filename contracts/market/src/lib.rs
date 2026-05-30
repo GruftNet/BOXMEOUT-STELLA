@@ -855,6 +855,15 @@ impl Market {
         Ok(Self::load_state(&env)?.status)
     }
 
+    /// Returns the three pool sizes as `(pool_a, pool_b, pool_draw)`.
+    /// Alias for `get_pool_sizes` — returns `(0, 0, 0)` if not initialized.
+    pub fn get_pools(env: Env) -> (i128, i128, i128) {
+        match Self::load_state(&env) {
+            Ok(s) => (s.pool_a, s.pool_b, s.pool_draw),
+            Err(_) => (0, 0, 0),
+        }
+    }
+
     // =========================================================================
     // ADMIN CONFIG FUNCTIONS
     // =========================================================================
@@ -913,6 +922,11 @@ impl Market {
         Ok(())
     }
 
+    /// Returns the claimable LP fee amount for a liquidity provider in a market.
+    ///
+    /// Reads `lp_fee_per_share` and the provider's `lp_position` from storage
+    /// and computes the unclaimed fee using the fee-per-share accumulator pattern.
+    /// Returns `0` if no position exists.
     pub fn get_lp_claimable_fees(env: Env, _market_id: u64, _provider: Address) -> i128 {
         let lp_fee_per_share: i128 = env
             .storage().persistent()

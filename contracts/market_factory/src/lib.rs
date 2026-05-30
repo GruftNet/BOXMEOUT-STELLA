@@ -217,7 +217,12 @@ impl MarketFactory {
         map.get(market_id).ok_or(ContractError::MarketNotFound)
     }
 
-    /// Lists markets with pagination.
+    /// Lists markets with pagination, returning `(market_id, status)` pairs.
+    ///
+    /// - `offset`: first market ID to include (0-based)
+    /// - `limit`: maximum number of results; capped at 100
+    ///
+    /// Markets whose state cannot be read are silently skipped.
     pub fn list_markets(env: Env, offset: u64, limit: u32) -> Vec<(u64, MarketStatus)> {
         let count: u64 = env.storage().persistent().get(&MARKET_COUNT).unwrap_or(0);
         let map: Map<u64, Address> =

@@ -7,76 +7,136 @@ use soroban_sdk::{Address, Env, String, Symbol};
 
 use crate::types::{BetRecord, ClaimReceipt, Outcome};
 
+/// Emits a `market_created` event when a new market is deployed.
+///
+/// Topics: `(Symbol("market_created"), market_id)`
+/// Data:   `(contract_address, match_id)`
 pub fn emit_market_created(env: &Env, market_id: u64, contract_address: Address, match_id: String) {
     let topics = (Symbol::new(env, "market_created"), market_id);
     env.events().publish(topics, (contract_address, match_id));
 }
 
+/// Emits a `market_locked` event when betting is closed.
+///
+/// Topics: `(Symbol("market_locked"), market_id)`
+/// Data:   `()`
 pub fn emit_market_locked(env: &Env, market_id: u64) {
     let topics = (Symbol::new(env, "market_locked"), market_id);
     env.events().publish(topics, ());
 }
 
+/// Emits a `market_resolved` event when an oracle submits a final outcome.
+///
+/// Topics: `(Symbol("market_resolved"), market_id)`
+/// Data:   `(outcome, oracle_address)`
 pub fn emit_market_resolved(env: &Env, market_id: u64, outcome: Outcome, oracle_address: Address) {
     let topics = (Symbol::new(env, "market_resolved"), market_id);
     env.events().publish(topics, (outcome, oracle_address));
 }
 
+/// Emits a `bet_placed` event when a bettor places a bet.
+///
+/// Topics: `(Symbol("bet_placed"), market_id)`
+/// Data:   `BetRecord`
 pub fn emit_bet_placed(env: &Env, market_id: u64, bet: BetRecord) {
     let topics = (Symbol::new(env, "bet_placed"), market_id);
     env.events().publish(topics, bet);
 }
 
+/// Emits a `winnings_claimed` event when a winner claims their payout.
+///
+/// Topics: `(Symbol("winnings_claimed"), market_id)`
+/// Data:   `ClaimReceipt`
 pub fn emit_winnings_claimed(env: &Env, market_id: u64, receipt: ClaimReceipt) {
     let topics = (Symbol::new(env, "winnings_claimed"), market_id);
     env.events().publish(topics, receipt);
 }
 
+/// Emits a `refund_claimed` event when a bettor claims a refund on a cancelled market.
+///
+/// Topics: `(Symbol("refund_claimed"), market_id)`
+/// Data:   `(bettor, amount)`
 pub fn emit_refund_claimed(env: &Env, market_id: u64, bettor: Address, amount: i128) {
     let topics = (Symbol::new(env, "refund_claimed"), market_id);
     env.events().publish(topics, (bettor, amount));
 }
 
+/// Emits a `market_cancelled` event when a market is cancelled.
+///
+/// Topics: `(Symbol("market_cancelled"), market_id)`
+/// Data:   `reason: String`
 pub fn emit_market_cancelled(env: &Env, market_id: u64, reason: String) {
     let topics = (Symbol::new(env, "market_cancelled"), market_id);
     env.events().publish(topics, reason);
 }
 
+/// Emits a `market_disputed` event when a resolved market is placed under review.
+///
+/// Topics: `(Symbol("market_disputed"), market_id)`
+/// Data:   `reason: String`
 pub fn emit_market_disputed(env: &Env, market_id: u64, reason: String) {
     let topics = (Symbol::new(env, "market_disputed"), market_id);
     env.events().publish(topics, reason);
 }
 
+/// Emits a `dispute_resolved` event when an admin finalises a disputed outcome.
+///
+/// Topics: `(Symbol("dispute_resolved"), market_id)`
+/// Data:   `final_outcome: Outcome`
 pub fn emit_dispute_resolved(env: &Env, market_id: u64, final_outcome: Outcome) {
     let topics = (Symbol::new(env, "dispute_resolved"), market_id);
     env.events().publish(topics, final_outcome);
 }
 
+/// Emits an `admin_transferred` event when admin privileges change hands.
+///
+/// Topics: `(Symbol("admin_transferred"),)`
+/// Data:   `(old_admin, new_admin)`
 pub fn emit_admin_transferred(env: &Env, old_admin: Address, new_admin: Address) {
     let topics = (Symbol::new(env, "admin_transferred"),);
     env.events().publish(topics, (old_admin, new_admin));
 }
 
+/// Emits a `fee_deposited` event when a market deposits fees into the treasury.
+///
+/// Topics: `(Symbol("fee_deposited"),)`
+/// Data:   `(market, token, amount)`
 pub fn emit_fee_deposited(env: &Env, market: Address, token: Address, amount: i128) {
     let topics = (Symbol::new(env, "fee_deposited"),);
     env.events().publish(topics, (market, token, amount));
 }
 
+/// Emits a `fee_withdrawn` event when the admin withdraws accumulated fees.
+///
+/// Topics: `(Symbol("fee_withdrawn"),)`
+/// Data:   `(token, amount, destination)`
 pub fn emit_fee_withdrawn(env: &Env, token: Address, amount: i128, destination: Address) {
     let topics = (Symbol::new(env, "fee_withdrawn"),);
     env.events().publish(topics, (token, amount, destination));
 }
 
+/// Emits an `emergency_drain` event when the admin drains all fees for a token.
+///
+/// Topics: `(Symbol("emergency_drain"),)`
+/// Data:   `(token, amount, admin)`
 pub fn emit_emergency_drain(env: &Env, token: Address, amount: i128, admin: Address) {
     let topics = (Symbol::new(env, "emergency_drain"),);
     env.events().publish(topics, (token, amount, admin));
 }
 
+/// Emits a `config_updated` event when a configuration parameter is changed.
+///
+/// Topics: `(Symbol("config_updated"),)`
+/// Data:   `(param_name, new_value)`
 pub fn emit_config_updated(env: &Env, param_name: String, new_value: i128) {
     let topics = (Symbol::new(env, "config_updated"),);
     env.events().publish(topics, (param_name, new_value));
 }
 
+/// Emits a `conflicting_oracle_report` event when two oracles disagree on the outcome.
+///
+/// Topics: `(Symbol("conflicting_oracle_report"), market_id)`
+/// Data:   `oracle_address`
 pub fn emit_conflicting_oracle_report(env: &Env, market_id: u64, oracle_address: Address) {
     let topics = (Symbol::new(env, "conflicting_oracle_report"), market_id);
     env.events().publish(topics, oracle_address);
