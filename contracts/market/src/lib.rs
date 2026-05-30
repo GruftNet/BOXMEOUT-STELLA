@@ -10,7 +10,7 @@
 mod tests;
 
 use soroban_sdk::{
-    contract, contractimpl, contractclient, token, Address, Env, Map, Vec,
+    contract, contractimpl, contractclient, token, Address, BytesN, Env, Map, Vec,
 };
 
 use boxmeout_shared::{
@@ -61,10 +61,17 @@ impl Market {
     }
 
     /// Abort if a claim/refund is already in progress (reentrancy guard).
+    ///
+    /// # Why this is necessary
+    /// If the token contract is adversarial it could re-enter `claim_winnings`
+    /// during the transfer callback. Without this guard a second call would
+    /// pass all CHECKS (bets not yet marked claimed) and issue a double payout.
+    /// The CLAIMING flag is set in EFFECTS (before any transfer) and cleared
+    /// in CLEANUP (after all transfers), making re-entry impossible.
     fn require_not_claiming(env: &Env) -> Result<(), ContractError> {
         let claiming: bool = env.storage().instance().get(&CLAIMING).unwrap_or(false);
         if claiming {
-            return Err(ContractError::InvalidMarketStatus);
+            return Err(ContractError::ReentrancyGuard);
         }
         Ok(())
     }
@@ -734,6 +741,15 @@ impl Market {
         Self::load_bets(&env, &bettor)
     }
 
+    /// Returns the bettor's first unclaimed bet position, or None if no bet exists.
+    pub fn get_bet(env: Env, bettor: Address) -> Option<BetRecord> {
+        let bets = Self::load_bets(&env, &bettor);
+        if bets.is_empty() {
+            return None;
+        }
+        Some(bets.get(0).unwrap())
+    }
+
     /// Returns the current odds for each outcome (in basis points).
     pub fn get_current_odds(env: Env) -> (u32, u32, u32) {
         let state = match Self::load_state(&env) {
@@ -784,6 +800,37 @@ impl Market {
         list.len()
     }
 
+    /// Returns a paginated list of all bet records across all bettors.
+    /// `limit` is capped at 50. Returns an empty vec if no bets exist.
+    pub fn get_all_bets(env: Env, offset: u32, limit: u32) -> Vec<BetRecord> {
+        let cap: u32 = if limit > 50 { 50 } else { limit };
+        let bettor_list: Vec<Address> =
+            env.storage().persistent().get(&BETTOR_LIST).unwrap_or_else(|| Vec::new(&env));
+        let bets_map: soroban_sdk::Map<Address, Vec<BetRecord>> =
+            env.storage().persistent().get(&BETS).unwrap_or_else(|| soroban_sdk::Map::new(&env));
+
+        let mut all: Vec<BetRecord> = Vec::new(&env);
+        for addr in bettor_list.iter() {
+            if let Some(records) = bets_map.get(addr) {
+                for r in records.iter() {
+                    all.push_back(r);
+                }
+            }
+        }
+
+        let total = all.len();
+        let mut result: Vec<BetRecord> = Vec::new(&env);
+        let start = offset;
+        let end = (offset + cap).min(total);
+        if start >= total {
+            return result;
+        }
+        for i in start..end {
+            result.push_back(all.get(i).unwrap());
+        }
+        result
+    }
+
     /// Returns the current pool sizes for each outcome.
     pub fn get_pool_sizes(env: Env) -> (i128, i128, i128) {
         let state = match Self::load_state(&env) {
@@ -791,6 +838,21 @@ impl Market {
             Err(_) => return (0, 0, 0),
         };
         (state.pool_a, state.pool_b, state.pool_draw)
+    }
+
+    /// Returns true if the bettor has already claimed winnings or a refund.
+    /// Returns false if the bettor has not placed any bet in this market.
+    pub fn has_claimed(env: Env, bettor: Address) -> bool {
+        let bets = Self::load_bets(&env, &bettor);
+        if bets.is_empty() {
+            return false;
+        }
+        bets.iter().all(|b| b.claimed)
+    }
+
+    /// Returns the current status of the market.
+    pub fn get_status(env: Env) -> Result<MarketStatus, ContractError> {
+        Ok(Self::load_state(&env)?.status)
     }
 
     // =========================================================================
@@ -892,6 +954,24 @@ impl Market {
             return Err(ContractError::Unauthorized);
         }
         env.storage().instance().set(&PAUSED, &false);
+        Ok(())
+    }
+
+    /// Upgrades the contract WASM. Only callable by the factory (admin).
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the factory admin
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+        admin.require_auth();
+        let factory: Address = env
+            .storage().persistent()
+            .get(&FACTORY)
+            .ok_or(ContractError::NotFactory)?;
+        if admin != factory {
+            return Err(ContractError::Unauthorized);
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        boxmeout_shared::emit_contract_upgraded(&env, new_wasm_hash);
         Ok(())
     }
 }

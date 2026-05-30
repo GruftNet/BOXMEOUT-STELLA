@@ -157,4 +157,70 @@ describe('MarketService', () => {
     const bets = await getBetsByMarket('mkt-1');
     expect(bets).toEqual([]);
   });
+
+  // 10 ────────────────────────────────────────────────────────────────────────
+  it('getMarkets() filters by fighter name (partial match)', async () => {
+    const market1 = makeMarket({ market_id: 'mkt-1', fighter_a: 'Floyd Mayweather', fighter_b: 'Manny Pacquiao' });
+    const market2 = makeMarket({ market_id: 'mkt-2', fighter_a: 'Canelo Alvarez', fighter_b: 'Gennady Golovkin' });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([market1, market2]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+    const result = await getMarkets({ fighter: 'Mayweather' });
+    expect(result.total).toBe(1);
+    expect(result.markets[0].fighter_a).toBe('Floyd Mayweather');
+  });
+
+  // 11 ────────────────────────────────────────────────────────────────────────
+  it('getMarkets() filters by fighter name (case-insensitive)', async () => {
+    const market = makeMarket({ market_id: 'mkt-1', fighter_a: 'Floyd Mayweather', fighter_b: 'Manny Pacquiao' });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([market]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+    const result = await getMarkets({ fighter: 'mayweather' });
+    expect(result.total).toBe(1);
+  });
+
+  // 12 ────────────────────────────────────────────────────────────────────────
+  it('getMarkets() filters by date range', async () => {
+    const market1 = makeMarket({ market_id: 'mkt-1', scheduled_at: new Date('2026-06-01T00:00:00Z') });
+    const market2 = makeMarket({ market_id: 'mkt-2', scheduled_at: new Date('2026-07-01T00:00:00Z') });
+    const market3 = makeMarket({ market_id: 'mkt-3', scheduled_at: new Date('2026-08-01T00:00:00Z') });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([market1, market2, market3]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+    const result = await getMarkets({
+      dateFrom: new Date('2026-06-15T00:00:00Z'),
+      dateTo: new Date('2026-07-15T00:00:00Z'),
+    });
+    expect(result.total).toBe(1);
+    expect(result.markets[0].market_id).toBe('mkt-2');
+  });
+
+  // 13 ────────────────────────────────────────────────────────────────────────
+  it('getMarkets() sorts by scheduled_at DESC (most recent first)', async () => {
+    const market1 = makeMarket({ market_id: 'mkt-1', scheduled_at: new Date('2026-06-01T00:00:00Z') });
+    const market2 = makeMarket({ market_id: 'mkt-2', scheduled_at: new Date('2026-07-01T00:00:00Z') });
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue([market1, market2]),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+    const result = await getMarkets();
+    expect(result.markets[0].market_id).toBe('mkt-2'); // Most recent first
+    expect(result.markets[1].market_id).toBe('mkt-1');
+  });
 });

@@ -60,4 +60,8 @@ pub enum ContractError {
     OracleAlreadyWhitelisted = 51,
     /// Vec of market IDs exceeds the maximum allowed (20)
     TooManyMarkets = 52,
+
+    // ── Reentrancy ─────────────────────────────────────────
+    /// A claim or refund transfer is already in progress
+    ReentrancyGuard = 60,
 }

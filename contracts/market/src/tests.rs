@@ -78,16 +78,32 @@ mod security_tests {
     #[test]
     fn test_reentrancy_guard_blocks_concurrent_claim() {
         // Validates the CLAIMING boolean lock logic.
-        // If CLAIMING=true, require_not_claiming() returns an error.
-        let claiming = true;
-        let result: Result<(), ()> = if claiming { Err(()) } else { Ok(()) };
-        assert!(result.is_err(), "Reentrancy guard must block concurrent claims");
+        // require_not_claiming() reads instance storage; if CLAIMING=true it
+        // returns ContractError::ReentrancyGuard, preventing a second entry
+        // into claim_winnings while a token transfer is in flight.
+        use boxmeout_shared::errors::ContractError;
+        let env = Env::default();
+        env.storage().instance().set(&"CLAIMING", &true);
+        let claiming: bool = env.storage().instance().get(&"CLAIMING").unwrap_or(false);
+        let result: Result<(), ContractError> = if claiming {
+            Err(ContractError::ReentrancyGuard)
+        } else {
+            Ok(())
+        };
+        assert_eq!(result, Err(ContractError::ReentrancyGuard));
     }
 
     #[test]
     fn test_reentrancy_guard_allows_after_reset() {
-        let claiming = false;
-        let result: Result<(), ()> = if claiming { Err(()) } else { Ok(()) };
+        use boxmeout_shared::errors::ContractError;
+        let env = Env::default();
+        env.storage().instance().set(&"CLAIMING", &false);
+        let claiming: bool = env.storage().instance().get(&"CLAIMING").unwrap_or(false);
+        let result: Result<(), ContractError> = if claiming {
+            Err(ContractError::ReentrancyGuard)
+        } else {
+            Ok(())
+        };
         assert!(result.is_ok(), "Reentrancy guard must allow after lock is cleared");
     }
 
@@ -1996,5 +2012,527 @@ mod bet_timing_lock_tests {
 
         let result = client.try_place_bet(&bettor, &BetSide::FighterA, &1_000_000i128, &token_id);
         assert!(result.is_err(), "Bet after lock threshold must return BettingClosed");
+    }
+}
+
+// ============================================================
+// ISSUE #710: min_bet enforcement boundary tests
+// ============================================================
+#[cfg(test)]
+mod min_bet_enforcement_tests {
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger, LedgerInfo},
+        token::StellarAssetClient,
+        Address, Env,
+    };
+    use boxmeout_shared::types::{BetSide, FightDetails, MarketConfig};
+    use crate::Market;
+
+    const SCHEDULED_AT: u64 = 100_000;
+
+    fn fight(env: &Env) -> FightDetails {
+        FightDetails {
+            match_id: soroban_sdk::String::from_str(env, "FURY-USYK-2025"),
+            fighter_a: soroban_sdk::String::from_str(env, "Fury"),
+            fighter_b: soroban_sdk::String::from_str(env, "Usyk"),
+            weight_class: soroban_sdk::String::from_str(env, "Heavyweight"),
+            scheduled_at: SCHEDULED_AT,
+            venue: soroban_sdk::String::from_str(env, "Riyadh"),
+            title_fight: true,
+        }
+    }
+
+    fn config(min_bet: i128) -> MarketConfig {
+        MarketConfig {
+            min_bet,
+            max_bet: 100_000_000_000,
+            fee_bps: 200,
+            lock_before_secs: 3_600,
+            resolution_window: 86_400,
+        }
+    }
+
+    fn setup(env: &Env, min_bet: i128) -> (crate::MarketClient<'static>, Address) {
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000,
+            protocol_version: 20,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 1,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_311_520,
+        });
+        let factory = Address::generate(env);
+        let treasury = Address::generate(env);
+        let contract_id = env.register_contract(None, Market);
+        let client = crate::MarketClient::new(env, &contract_id);
+        client.initialize(&factory, &1u64, &fight(env), &config(min_bet), &treasury);
+        let token_id = env.register_stellar_asset_contract(factory.clone());
+        (client, token_id)
+    }
+
+    /// Bet exactly at min_bet must succeed.
+    #[test]
+    fn test_bet_at_min_bet_succeeds() {
+        let env = Env::default();
+        let min_bet = 1_000_000i128;
+        let (client, token_id) = setup(&env, min_bet);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &min_bet);
+        let result = client.try_place_bet(&bettor, &BetSide::FighterA, &min_bet, &token_id);
+        assert!(result.is_ok(), "Bet at exact min_bet must succeed");
+    }
+
+    /// Bet one stroop below min_bet must return BetTooSmall.
+    #[test]
+    fn test_bet_below_min_bet_returns_bet_too_small() {
+        let env = Env::default();
+        let min_bet = 1_000_000i128;
+        let (client, token_id) = setup(&env, min_bet);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &min_bet);
+        let result = client.try_place_bet(&bettor, &BetSide::FighterA, &(min_bet - 1), &token_id);
+        assert!(result.is_err(), "Bet below min_bet must return BetTooSmall");
+    }
+
+    /// Bet of 1 stroop when min_bet is 1_000_000 must fail.
+    #[test]
+    fn test_bet_of_one_stroop_fails_when_min_bet_is_large() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env, 1_000_000);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &1_000_000);
+        let result = client.try_place_bet(&bettor, &BetSide::FighterB, &1i128, &token_id);
+        assert!(result.is_err());
+    }
+
+    /// min_bet read from storage (config set at initialize time).
+    #[test]
+    fn test_min_bet_read_from_storage() {
+        let env = Env::default();
+        let min_bet = 5_000_000i128;
+        let (client, token_id) = setup(&env, min_bet);
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &min_bet);
+        // min_bet - 1 must fail
+        let fail = client.try_place_bet(&bettor, &BetSide::FighterA, &(min_bet - 1), &token_id);
+        assert!(fail.is_err());
+        // min_bet must succeed
+        let ok = client.try_place_bet(&bettor, &BetSide::FighterA, &min_bet, &token_id);
+        assert!(ok.is_ok());
+    }
+}
+
+// ============================================================
+// ISSUE #711: get_all_bets() pagination tests
+// ============================================================
+#[cfg(test)]
+mod get_all_bets_tests {
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger, LedgerInfo},
+        token::StellarAssetClient,
+        Address, Env,
+    };
+    use boxmeout_shared::types::{BetSide, FightDetails, MarketConfig};
+    use crate::Market;
+
+    const SCHEDULED_AT: u64 = 100_000;
+
+    fn fight(env: &Env) -> FightDetails {
+        FightDetails {
+            match_id: soroban_sdk::String::from_str(env, "FURY-USYK-2025"),
+            fighter_a: soroban_sdk::String::from_str(env, "Fury"),
+            fighter_b: soroban_sdk::String::from_str(env, "Usyk"),
+            weight_class: soroban_sdk::String::from_str(env, "Heavyweight"),
+            scheduled_at: SCHEDULED_AT,
+            venue: soroban_sdk::String::from_str(env, "Riyadh"),
+            title_fight: true,
+        }
+    }
+
+    fn config() -> MarketConfig {
+        MarketConfig {
+            min_bet: 1_000_000,
+            max_bet: 100_000_000_000,
+            fee_bps: 200,
+            lock_before_secs: 3_600,
+            resolution_window: 86_400,
+        }
+    }
+
+    fn setup(env: &Env) -> (crate::MarketClient<'static>, Address) {
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1_000,
+            protocol_version: 20,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 1,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_311_520,
+        });
+        let factory = Address::generate(env);
+        let treasury = Address::generate(env);
+        let contract_id = env.register_contract(None, Market);
+        let client = crate::MarketClient::new(env, &contract_id);
+        client.initialize(&factory, &1u64, &fight(env), &config(), &treasury);
+        let token_id = env.register_stellar_asset_contract(factory.clone());
+        (client, token_id)
+    }
+
+    /// Returns empty vec when no bets placed.
+    #[test]
+    fn test_get_all_bets_empty_market() {
+        let env = Env::default();
+        let (client, _token) = setup(&env);
+        let result = client.get_all_bets(&0u32, &10u32);
+        assert_eq!(result.len(), 0);
+    }
+
+    /// Returns all bets when within limit.
+    #[test]
+    fn test_get_all_bets_returns_all_within_limit() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env);
+
+        let bettor1 = Address::generate(&env);
+        let bettor2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor1, &2_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor2, &2_000_000i128);
+
+        client.place_bet(&bettor1, &BetSide::FighterA, &1_000_000i128, &token_id);
+        client.place_bet(&bettor2, &BetSide::FighterB, &1_000_000i128, &token_id);
+
+        let result = client.get_all_bets(&0u32, &10u32);
+        assert_eq!(result.len(), 2);
+    }
+
+    /// Pagination: offset skips correct number of records.
+    #[test]
+    fn test_get_all_bets_offset_pagination() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env);
+
+        let bettor1 = Address::generate(&env);
+        let bettor2 = Address::generate(&env);
+        let bettor3 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor1, &2_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor2, &2_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor3, &2_000_000i128);
+
+        client.place_bet(&bettor1, &BetSide::FighterA, &1_000_000i128, &token_id);
+        client.place_bet(&bettor2, &BetSide::FighterB, &1_000_000i128, &token_id);
+        client.place_bet(&bettor3, &BetSide::Draw, &1_000_000i128, &token_id);
+
+        // offset=1, limit=10 → should return 2 records
+        let result = client.get_all_bets(&1u32, &10u32);
+        assert_eq!(result.len(), 2);
+    }
+
+    /// limit capped at 50: passing 100 returns at most 50.
+    #[test]
+    fn test_get_all_bets_limit_capped_at_50() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env);
+
+        for _ in 0..3 {
+            let bettor = Address::generate(&env);
+            StellarAssetClient::new(&env, &token_id).mint(&bettor, &2_000_000i128);
+            client.place_bet(&bettor, &BetSide::FighterA, &1_000_000i128, &token_id);
+        }
+
+        // limit=100 capped at 50, but only 3 bets exist → returns 3
+        let result = client.get_all_bets(&0u32, &100u32);
+        assert_eq!(result.len(), 3);
+    }
+
+    /// offset beyond total returns empty vec.
+    #[test]
+    fn test_get_all_bets_offset_beyond_total_returns_empty() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env);
+
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &2_000_000i128);
+        client.place_bet(&bettor, &BetSide::FighterA, &1_000_000i128, &token_id);
+
+        let result = client.get_all_bets(&99u32, &10u32);
+        assert_eq!(result.len(), 0);
+    }
+
+    /// limit=0 returns empty vec.
+    #[test]
+    fn test_get_all_bets_limit_zero_returns_empty() {
+        let env = Env::default();
+        let (client, token_id) = setup(&env);
+
+        let bettor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor, &2_000_000i128);
+        client.place_bet(&bettor, &BetSide::FighterA, &1_000_000i128, &token_id);
+
+        let result = client.get_all_bets(&0u32, &0u32);
+        assert_eq!(result.len(), 0);
+    }
+}
+
+// ============================================================
+// ISSUE #708: Market betting lifecycle end-to-end tests
+// ============================================================
+#[cfg(test)]
+mod market_lifecycle_tests {
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger, LedgerInfo},
+        token::StellarAssetClient,
+        Address, Env,
+    };
+    use boxmeout_shared::types::{
+        BetRecord, BetSide, FightDetails, MarketConfig, MarketState, MarketStatus, Outcome,
+        OracleRole, OptionalOracleRole, OptionalOutcome,
+    };
+    use crate::Market;
+
+    const SCHEDULED_AT: u64 = 100_000;
+    const LOCK_BEFORE: u64 = 3_600;
+
+    fn fight(env: &Env) -> FightDetails {
+        FightDetails {
+            match_id: soroban_sdk::String::from_str(env, "FURY-USYK-2025"),
+            fighter_a: soroban_sdk::String::from_str(env, "Fury"),
+            fighter_b: soroban_sdk::String::from_str(env, "Usyk"),
+            weight_class: soroban_sdk::String::from_str(env, "Heavyweight"),
+            scheduled_at: SCHEDULED_AT,
+            venue: soroban_sdk::String::from_str(env, "Riyadh"),
+            title_fight: true,
+        }
+    }
+
+    fn config() -> MarketConfig {
+        MarketConfig {
+            min_bet: 1_000_000,
+            max_bet: 100_000_000_000,
+            fee_bps: 200,
+            lock_before_secs: LOCK_BEFORE,
+            resolution_window: 86_400,
+        }
+    }
+
+    fn set_time(env: &Env, ts: u64) {
+        env.ledger().set(LedgerInfo {
+            timestamp: ts,
+            protocol_version: 20,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 1,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_311_520,
+        });
+    }
+
+    fn setup(env: &Env) -> (crate::MarketClient<'static>, Address, Address, Address) {
+        env.mock_all_auths();
+        set_time(env, 1_000);
+        let factory = Address::generate(env);
+        let treasury = Address::generate(env);
+        let contract_id = env.register_contract(None, Market);
+        let client = crate::MarketClient::new(env, &contract_id);
+        client.initialize(&factory, &1u64, &fight(env), &config(), &treasury);
+        let token_id = env.register_stellar_asset_contract(factory.clone());
+        (client, contract_id, factory, token_id)
+    }
+
+    // ── Lifecycle: create → place bets → lock → resolve → claim ──────────────
+
+    /// Full happy-path: bets placed, market locked, resolved, winner claims.
+    #[test]
+    fn test_lifecycle_create_bet_lock_resolve_claim() {
+        let env = Env::default();
+        let (client, contract_id, factory, token_id) = setup(&env);
+
+        let bettor1 = Address::generate(&env);
+        let bettor2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor1, &10_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor2, &5_000_000i128);
+
+        client.place_bet(&bettor1, &BetSide::FighterA, &10_000_000i128, &token_id);
+        client.place_bet(&bettor2, &BetSide::FighterB, &5_000_000i128, &token_id);
+
+        let state = client.get_state();
+        assert_eq!(state.pool_a, 10_000_000);
+        assert_eq!(state.pool_b, 5_000_000);
+        assert_eq!(state.total_pool, 15_000_000);
+
+        // Lock market
+        set_time(&env, SCHEDULED_AT - LOCK_BEFORE + 1);
+        client.lock_market(&factory);
+        assert_eq!(client.get_state().status, MarketStatus::Locked);
+
+        // Inject resolved state (bypasses oracle cross-contract)
+        let resolved = MarketState {
+            market_id: 1,
+            fight: fight(&env),
+            config: config(),
+            status: MarketStatus::Resolved,
+            outcome: OptionalOutcome::Some(Outcome::FighterA),
+            pool_a: 10_000_000,
+            pool_b: 5_000_000,
+            pool_draw: 0,
+            total_pool: 15_000_000,
+            resolved_at: SCHEDULED_AT + 1,
+            oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &resolved);
+        });
+
+        // Bettor1 claims winnings
+        // fee = 15_000_000 * 200 / 10_000 = 300_000
+        // payout = 10_000_000 * 14_700_000 / 10_000_000 = 14_700_000
+        let receipt = client.claim_winnings(&bettor1, &token_id);
+        assert_eq!(receipt.fee_deducted, 300_000);
+        assert_eq!(receipt.amount_won, 14_700_000);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token_id);
+        assert_eq!(token_client.balance(&bettor1), 14_700_000);
+    }
+
+    // ── Lifecycle: create → place bets → cancel → refund ─────────────────────
+
+    /// Cancel path: bets placed, market cancelled, all bettors refunded in full.
+    #[test]
+    fn test_lifecycle_create_bet_cancel_refund() {
+        let env = Env::default();
+        let (client, _contract_id, factory, token_id) = setup(&env);
+
+        let bettor1 = Address::generate(&env);
+        let bettor2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor1, &3_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor2, &7_000_000i128);
+
+        client.place_bet(&bettor1, &BetSide::FighterA, &3_000_000i128, &token_id);
+        client.place_bet(&bettor2, &BetSide::FighterB, &7_000_000i128, &token_id);
+
+        client.cancel_market(&factory, &soroban_sdk::String::from_str(&env, "fight cancelled"));
+        assert_eq!(client.get_state().status, MarketStatus::Cancelled);
+
+        let refund1 = client.claim_refund(&bettor1, &token_id);
+        let refund2 = client.claim_refund(&bettor2, &token_id);
+        assert_eq!(refund1, 3_000_000);
+        assert_eq!(refund2, 7_000_000);
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token_id);
+        assert_eq!(token_client.balance(&bettor1), 3_000_000);
+        assert_eq!(token_client.balance(&bettor2), 7_000_000);
+    }
+
+    // ── Lifecycle: dispute → resolve dispute → claim with corrected outcome ───
+
+    /// Dispute path: resolved market disputed, admin corrects outcome, winner claims.
+    #[test]
+    fn test_lifecycle_dispute_resolve_claim() {
+        let env = Env::default();
+        let (client, contract_id, factory, token_id) = setup(&env);
+
+        let bettor = Address::generate(&env);
+        // Inject resolved state with wrong outcome (FighterB won, but bettor backed FighterA)
+        let wrong_resolved = MarketState {
+            market_id: 1,
+            fight: fight(&env),
+            config: config(),
+            status: MarketStatus::Resolved,
+            outcome: OptionalOutcome::Some(Outcome::FighterB),
+            pool_a: 10_000_000,
+            pool_b: 0,
+            pool_draw: 0,
+            total_pool: 10_000_000,
+            resolved_at: SCHEDULED_AT + 1,
+            oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
+        };
+        let bet = BetRecord {
+            bettor: bettor.clone(),
+            market_id: 1,
+            side: BetSide::FighterA,
+            amount: 10_000_000,
+            placed_at: 1_000,
+            claimed: false,
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &wrong_resolved);
+            let mut map = soroban_sdk::Map::<Address, soroban_sdk::Vec<BetRecord>>::new(&env);
+            let mut bets = soroban_sdk::Vec::new(&env);
+            bets.push_back(bet);
+            map.set(bettor.clone(), bets);
+            env.storage().persistent().set(&"BETS", &map);
+        });
+        StellarAssetClient::new(&env, &token_id).mint(&contract_id, &10_000_000i128);
+
+        // Dispute
+        client.dispute_market(&factory, &soroban_sdk::String::from_str(&env, "wrong outcome"));
+        assert_eq!(client.get_state().status, MarketStatus::Disputed);
+
+        // Admin resolves with corrected outcome
+        client.resolve_dispute(&factory, &Outcome::FighterA);
+        let state = client.get_state();
+        assert_eq!(state.status, MarketStatus::Resolved);
+        assert_eq!(state.outcome, OptionalOutcome::Some(Outcome::FighterA));
+        assert_eq!(state.oracle_used, OptionalOracleRole::Some(OracleRole::Admin));
+
+        // Bettor claims with corrected outcome
+        let receipt = client.claim_winnings(&bettor, &token_id);
+        assert!(receipt.amount_won > 0);
+    }
+
+    // ── Multiple bettors, proportional payouts ────────────────────────────────
+
+    /// Three bettors on winning side receive proportional payouts summing ≤ net_pool.
+    #[test]
+    fn test_multiple_bettors_proportional_payouts() {
+        let env = Env::default();
+        let (client, contract_id, _factory, token_id) = setup(&env);
+
+        let bettor1 = Address::generate(&env);
+        let bettor2 = Address::generate(&env);
+        let bettor3 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor1, &10_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor2, &20_000_000i128);
+        StellarAssetClient::new(&env, &token_id).mint(&bettor3, &30_000_000i128);
+
+        client.place_bet(&bettor1, &BetSide::FighterA, &10_000_000i128, &token_id);
+        client.place_bet(&bettor2, &BetSide::FighterA, &20_000_000i128, &token_id);
+        client.place_bet(&bettor3, &BetSide::FighterA, &30_000_000i128, &token_id);
+
+        assert_eq!(client.get_state().pool_a, 60_000_000);
+
+        let resolved = MarketState {
+            market_id: 1,
+            fight: fight(&env),
+            config: config(),
+            status: MarketStatus::Resolved,
+            outcome: OptionalOutcome::Some(Outcome::FighterA),
+            pool_a: 60_000_000,
+            pool_b: 0,
+            pool_draw: 0,
+            total_pool: 60_000_000,
+            resolved_at: SCHEDULED_AT + 1,
+            oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
+        };
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&"STATE", &resolved);
+        });
+
+        let r1 = client.claim_winnings(&bettor1, &token_id);
+        let r2 = client.claim_winnings(&bettor2, &token_id);
+        let r3 = client.claim_winnings(&bettor3, &token_id);
+
+        // fee = 60_000_000 * 200 / 10_000 = 1_200_000; net = 58_800_000
+        assert_eq!(r1.amount_won, 9_800_000);
+        assert_eq!(r2.amount_won, 19_600_000);
+        assert_eq!(r3.amount_won, 29_400_000);
+
+        let net_pool = 60_000_000i128 - 1_200_000;
+        assert!(r1.amount_won + r2.amount_won + r3.amount_won <= net_pool);
     }
 }

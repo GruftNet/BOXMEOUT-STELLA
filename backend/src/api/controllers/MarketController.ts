@@ -18,11 +18,12 @@ const VALID_STATUSES = ['open', 'locked', 'resolved', 'cancelled', 'disputed'] a
 
 const listMarketsQuerySchema = z.object({
   status: z
-    .enum(VALID_STATUSES, {
-      errorMap: () => ({ message: `status must be one of: ${VALID_STATUSES.join(', ')}` }),
-    })
+    .enum(VALID_STATUSES)
     .optional(),
   weight_class: z.string().min(1).optional(),
+  fighter: z.string().min(1).optional(),
+  dateFrom: z.string().datetime().optional().transform(v => v ? new Date(v) : undefined),
+  dateTo: z.string().datetime().optional().transform(v => v ? new Date(v) : undefined),
   page: z.coerce.number().int().min(1, { message: 'page must be an integer ≥ 1' }).default(1),
   limit: z.coerce
     .number()
@@ -44,9 +45,9 @@ export const listMarketsValidation = validateQuery(listMarketsQuerySchema);
  */
 export async function listMarkets(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { status, weight_class, page, limit } = req.query as z.infer<typeof listMarketsQuerySchema>;
+    const { status, weight_class, fighter, dateFrom, dateTo, page, limit } = req.query as z.infer<typeof listMarketsQuerySchema>;
     const { markets, total } = await MarketService.getMarkets(
-      { status, weight_class },
+      { status, weight_class, fighter, dateFrom, dateTo },
       { page, limit },
     );
     res.status(200).json({ markets, total, page, limit });

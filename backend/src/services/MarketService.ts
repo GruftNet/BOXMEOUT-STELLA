@@ -7,7 +7,7 @@
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
 import type { Bet } from '../models/Bet';
 import { pool } from '../config/db';
-import { cacheGet, cacheSet } from './cache.service';
+import { cacheGet, cacheSet, cacheDelete, cacheDeletePattern } from './cache.service';
 import * as StellarService from './StellarService';
 import { AppError } from '../utils/AppError';
 
@@ -38,6 +38,9 @@ export { db };
 export interface MarketFilters {
   status?: string;
   weight_class?: string;
+  fighter?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
 }
 
 export interface Pagination {
@@ -74,11 +77,11 @@ export interface Portfolio {
  * Returns paginated markets from the database.
  *
  * Steps:
- *   1. Build WHERE clause from filters (status, weight_class)
+ *   1. Build WHERE clause from filters (status, weight_class, fighter name, date range)
  *   2. Apply pagination (LIMIT / OFFSET)
  *   3. Check Redis cache — return cached result if fresh (TTL 30s)
  *   4. Query DB if cache miss; store result in cache before returning
- *   5. Sort by scheduled_at ASC by default
+ *   5. Sort by scheduled_at DESC by default
  */
 export async function getMarkets(
   filters?: MarketFilters,
@@ -86,9 +89,12 @@ export async function getMarkets(
 ): Promise<MarketListResult> {
   const statusKey = filters?.status ?? '';
   const weightKey = filters?.weight_class ?? '';
+  const fighterKey = filters?.fighter ?? '';
+  const dateFromKey = filters?.dateFrom?.toISOString() ?? '';
+  const dateToKey = filters?.dateTo?.toISOString() ?? '';
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
-  const cacheKey = `markets:${statusKey}:${weightKey}:${page}:${limit}`;
+  const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${page}:${limit}`;
   const cached = await cacheGet<MarketListResult>(cacheKey);
   if (cached) return cached;
 
@@ -98,11 +104,20 @@ export async function getMarkets(
     const filtered = markets.filter((market) => {
       if (filters?.status && market.status !== filters.status) return false;
       if (filters?.weight_class && market.weight_class !== filters.weight_class) return false;
+      if (filters?.fighter) {
+        const fighterLower = filters.fighter.toLowerCase();
+        if (!market.fighter_a.toLowerCase().includes(fighterLower) && 
+            !market.fighter_b.toLowerCase().includes(fighterLower)) {
+          return false;
+        }
+      }
+      if (filters?.dateFrom && new Date(market.scheduled_at) < filters.dateFrom) return false;
+      if (filters?.dateTo && new Date(market.scheduled_at) > filters.dateTo) return false;
       return true;
     });
 
     const sorted = [...filtered].sort(
-      (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime(),
+      (a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime(),
     );
 
     const offset = (page - 1) * limit;
@@ -120,12 +135,24 @@ export async function getMarkets(
       values.push(filters.weight_class);
       whereClauses.push(`weight_class = $${values.length}`);
     }
+    if (filters?.fighter) {
+      values.push(`%${filters.fighter}%`);
+      whereClauses.push(`(fighter_a ILIKE $${values.length} OR fighter_b ILIKE $${values.length})`);
+    }
+    if (filters?.dateFrom) {
+      values.push(filters.dateFrom);
+      whereClauses.push(`scheduled_at >= $${values.length}`);
+    }
+    if (filters?.dateTo) {
+      values.push(filters.dateTo);
+      whereClauses.push(`scheduled_at <= $${values.length}`);
+    }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const offset = (page - 1) * limit;
 
     const rows = await pool.query(
-      `SELECT * FROM markets ${whereSql} ORDER BY scheduled_at ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      `SELECT * FROM markets ${whereSql} ORDER BY scheduled_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, limit, offset],
     );
 
@@ -148,6 +175,16 @@ export async function getMarkets(
 
   await cacheSet(cacheKey, result, 30);
   return result;
+}
+
+/**
+ * Invalidates cache for a market when it's updated.
+ * Clears the market cache and related pattern caches.
+ */
+export async function invalidateMarketCache(market_id: string): Promise<void> {
+  await cacheDelete(`market:${market_id}`);
+  await cacheDeletePattern(`markets:*`);
+  await cacheDelete(`market:${market_id}:stats`);
 }
 
 /**
@@ -212,6 +249,37 @@ export async function getMarketOdds(market_id: string): Promise<MarketOdds> {
     odds_a: Number(pool_a * 10000n / total_pool),
     odds_b: Number(pool_b * 10000n / total_pool),
     odds_draw: Number(pool_draw * 10000n / total_pool),
+  };
+}
+
+/**
+ * Calculates parimutuel odds for a market.
+ * 
+ * Formula: odds_x = total_pool / outcome_pool
+ * Returns all three odds as floats rounded to 2 decimal places.
+ * Returns { fighterA: 0, fighterB: 0, draw: 0 } for empty pools.
+ */
+export async function calculateOdds(market_id: string): Promise<{ fighterA: number; fighterB: number; draw: number }> {
+  const market = await db().findMarketById(market_id);
+  if (!market) throw AppError.notFound(`Market not found: ${market_id}`);
+
+  const total_pool = BigInt(market.total_pool);
+  const pool_a = BigInt(market.pool_a);
+  const pool_b = BigInt(market.pool_b);
+  const pool_draw = BigInt(market.pool_draw);
+
+  if (total_pool === 0n) {
+    return { fighterA: 0, fighterB: 0, draw: 0 };
+  }
+
+  const fighterA = pool_a === 0n ? 0 : Number((total_pool * 100n) / pool_a) / 100;
+  const fighterB = pool_b === 0n ? 0 : Number((total_pool * 100n) / pool_b) / 100;
+  const draw = pool_draw === 0n ? 0 : Number((total_pool * 100n) / pool_draw) / 100;
+
+  return {
+    fighterA: Math.round(fighterA * 100) / 100,
+    fighterB: Math.round(fighterB * 100) / 100,
+    draw: Math.round(draw * 100) / 100,
   };
 }
 
@@ -348,69 +416,6 @@ export async function getPortfolioByAddress(
     total_lost_xlm,
     pending_claims,
   };
-}
-
-/**
- * Returns all bets placed by a given Stellar address across all markets.
- * Returns an empty array (never 404) when the address has no bets.
- */
-export async function getBetsByAddress(bettor_address: string): Promise<Bet[]> {
-  if (_db) {
-    return db().findBetsByAddress(bettor_address);
-  }
-
-  const { rows } = await pool.query(
-    'SELECT * FROM bets WHERE bettor_address = $1 ORDER BY placed_at DESC',
-    [bettor_address],
-  );
-  return rows.map((row) => ({
-    ...row,
-    placed_at: new Date(row.placed_at),
-    claimed_at: row.claimed_at ? new Date(row.claimed_at) : null,
-  } as Bet));
-}
-
-export interface BettorStats {
-  total_wagered_xlm: number;
-  total_winnings_xlm: number;
-  total_bets: number;
-  win_rate: number;
-  favorite_fighter: string | null;
-}
-
-/**
- * Returns aggregate bettor statistics for a Stellar address.
- * Cached for 60 seconds per address.
- * Returns zeroed stats (not 404) for addresses with no bets.
- */
-export async function getBettorStats(bettor_address: string): Promise<BettorStats> {
-  const cacheKey = `bettor:${bettor_address}:stats`;
-  const cached = await cacheGet<BettorStats>(cacheKey);
-  if (cached) return cached;
-
-  const bets = await getBetsByAddress(bettor_address);
-
-  if (bets.length === 0) {
-    const empty: BettorStats = { total_wagered_xlm: 0, total_winnings_xlm: 0, total_bets: 0, win_rate: 0, favorite_fighter: null };
-    await cacheSet(cacheKey, empty, 60);
-    return empty;
-  }
-
-  const total_wagered_xlm = bets.reduce((s, b) => s + Number(b.amount) / 10_000_000, 0);
-  const won_bets = bets.filter(b => b.claimed && b.payout);
-  const total_winnings_xlm = won_bets.reduce((s, b) => s + Number(b.payout) / 10_000_000, 0);
-  const win_rate = bets.length > 0 ? won_bets.length / bets.length : 0;
-
-  // Compute favoriteFighter as the fighter bet on most often
-  const sideCounts: Record<string, number> = {};
-  for (const bet of bets) {
-    sideCounts[bet.side] = (sideCounts[bet.side] ?? 0) + 1;
-  }
-  const favorite_fighter = Object.entries(sideCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-
-  const stats: BettorStats = { total_wagered_xlm, total_winnings_xlm, total_bets: bets.length, win_rate, favorite_fighter };
-  await cacheSet(cacheKey, stats, 60);
-  return stats;
 }
 
 /**
