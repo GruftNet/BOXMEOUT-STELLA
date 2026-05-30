@@ -313,6 +313,7 @@ export async function fetchFallbackResult(match_id: string): Promise<FightOutcom
  */
 export async function runAutoResolutionJob(): Promise<{ resolved: number; skipped: number; failed: number }> {
   const stats = { resolved: 0, skipped: 0, failed: 0 };
+  const autoCancelHours = Number(process.env.AUTO_CANCEL_DEADLINE_HOURS ?? 72);
 
   // Step 1: Query all markets with status IN ('open', 'locked') and scheduled_at < NOW()
   let markets: Pick<Market, 'market_id' | 'match_id'>[];
@@ -351,14 +352,46 @@ export async function runAutoResolutionJob(): Promise<{ resolved: number; skippe
         outcome = await fetchFallbackResult(match_id);
       }
 
-      // Step 3: Skip if no confirmed result yet
+      // Step 3: If no confirmed result yet, check if we should auto-cancel
       if (outcome === null) {
-        logger.info({ market_id, match_id }, 'runAutoResolutionJob: no confirmed result yet, skipping');
-        stats.skipped++;
+        const marketResult = await pool.query(
+          `SELECT contract_address, scheduled_at
+             FROM markets
+            WHERE market_id = $1`,
+          [market_id],
+        );
+        if (marketResult.rowCount === 0) {
+          logger.warn({ market_id }, 'runAutoResolutionJob: market not found, skipping');
+          stats.skipped++;
+          continue;
+        }
+
+        const { contract_address, scheduled_at } = marketResult.rows[0];
+        const deadline = new Date(scheduled_at.getTime() + autoCancelHours * 60 * 60 * 1000);
+
+        if (new Date() > deadline) {
+          // Auto-cancel market past deadline
+          logger.info(
+            { market_id, match_id, scheduled_at, deadline },
+            'runAutoResolutionJob: market past deadline, auto-cancelling',
+          );
+
+          const keypair = Keypair.fromSecret(process.env.ORACLE_PRIVATE_KEY!);
+          const callerAddress = keypair.publicKey();
+          const callerScVal = Address.fromString(callerAddress).toScVal();
+          const reasonScVal = xdr.ScVal.scvString('auto-cancelled: fight result not confirmed within deadline');
+
+          await invokeContract(contract_address, 'cancel_market', [callerScVal, reasonScVal]);
+          stats.resolved++;
+          logger.info({ market_id, match_id }, 'runAutoResolutionJob: market auto-cancelled');
+        } else {
+          logger.info({ market_id, match_id }, 'runAutoResolutionJob: no confirmed result yet, skipping');
+          stats.skipped++;
+        }
         continue;
       }
 
-      // Step 2: Submit the confirmed result on-chain
+      // Step 4: Submit the confirmed result on-chain
       logger.info({ market_id, match_id, outcome }, 'runAutoResolutionJob: submitting fight result');
       await submitFightResult(match_id, outcome);
       stats.resolved++;
@@ -367,7 +400,7 @@ export async function runAutoResolutionJob(): Promise<{ resolved: number; skippe
         'runAutoResolutionJob: fight result submitted successfully',
       );
     } catch (err) {
-      // Step 4: Log the error but continue processing remaining markets
+      // Step 5: Log the error but continue processing remaining markets
       logger.error(
         { err, market_id, match_id },
         'runAutoResolutionJob: error processing market, requires manual review',
