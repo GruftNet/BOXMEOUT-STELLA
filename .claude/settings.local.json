@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git -C /c/Users/BlankDev/Desktop/Backup/Desktop/team_softwares/BOXMEOUT_STELLA status)",
-      "Bash(git -C /c/Users/BlankDev/Desktop/Backup/Desktop/team_softwares/BOXMEOUT_STELLA remote -v)",
-      "Bash(git add *)"
-    ]
-  }
-}
