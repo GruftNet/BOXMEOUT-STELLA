@@ -9,6 +9,7 @@ import { cacheDelete, cacheDeletePattern } from './cache.service';
 import { AppError } from '../utils/AppError';
 import { Address, xdr } from '@stellar/stellar-sdk';
 import { invokeContract } from './StellarService';
+import { emitBetPlaced } from '../websocket/realtime';
 
 export interface BetWithMarket extends Bet {
   market_id: string;
@@ -69,6 +70,9 @@ export async function recordBet(
     // Invalidate market cache
     await cacheDeletePattern(`market:${market_id}*`);
     await cacheDeletePattern('platform:stats');
+
+    // Notify the RiskEngine so it can re-evaluate pool exposure in real time.
+    emitBetPlaced(market_id);
 
     return {
       ...bet,

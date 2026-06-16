@@ -16,6 +16,7 @@ import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
 import { initActivityFeed } from "./websocket/realtime";
+import { getRiskEngine } from "./services/RiskEngine";
 
 // Validate environment variables on startup
 const env = validateEnv();
@@ -104,8 +105,16 @@ const server = app.listen(PORT, () => {
   startAutoResolutionCron();
   startAutoLockCron();
   startCleanupCron();
+  getRiskEngine().start();
 });
 
 initActivityFeed(server);
+
+const shutdown = (): void => {
+  getRiskEngine().stop();
+  server.close(() => process.exit(0));
+};
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
 
 export default app;
