@@ -36,6 +36,8 @@ pub enum ContractError {
     InvalidTimeRange = 15,
     /// Provided market configuration is invalid
     InvalidMarketParameters = 16,
+    /// Market status is invalid for the requested operation
+    InvalidMarketStatus = 17,
 
     // ── Bet Validation ─────────────────────────────────────
     /// Bet amount is below minimum allowed
@@ -50,6 +52,10 @@ pub enum ContractError {
     InvalidOutcome = 24,
     /// Bettor placed no bets in this market
     NoBetsFound = 25,
+    /// Bet amount exceeds the configured maximum
+    BetTooLarge = 26,
+    /// Betting window has closed (fight is too close or market is locked)
+    BettingClosed = 27,
 
     // ── Oracle / Resolution ────────────────────────────────
     /// Oracle signature verification failed
@@ -58,6 +64,8 @@ pub enum ContractError {
     ResolutionWindowExpired = 31,
     /// Two or more conflicting oracle reports were submitted
     ConflictingOracleReport = 32,
+    /// Oracle is not in the whitelist
+    OracleNotWhitelisted = 33,
 
     // ── Treasury ───────────────────────────────────────────
     /// Fee withdrawals are temporarily paused
@@ -76,8 +84,16 @@ pub enum ContractError {
     OracleAlreadyWhitelisted = 51,
     /// Too many markets were requested in one query
     TooManyMarkets = 52,
+    /// Admin has not yet uploaded the Market contract WASM hash
+    WasmHashNotSet = 53,
 
     // ── Reentrancy ─────────────────────────────────────────
     /// A claim or refund transfer is already in progress
     ReentrancyGuard = 60,
+
+    // ── LMSR / Math ────────────────────────────────────────
+    /// Integer arithmetic overflowed during Taylor series computation
+    ArithmeticOverflow = 70,
+    /// LMSR liquidity parameter b is below the enforced minimum
+    InvalidConfig = 71,
 }

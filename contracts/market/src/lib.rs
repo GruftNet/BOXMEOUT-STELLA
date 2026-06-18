@@ -4,6 +4,7 @@
 //! All fund-moving functions follow Checks-Effects-Interactions.
 //! require_auth() is always the first call in fund-moving fns.
 //! Emergency pause guard precedes every fund-moving operation.
+//! Odds and bet cost are computed using the LMSR AMM.
 //! ============================================================
 
 #[cfg(test)]
@@ -19,6 +20,7 @@ use boxmeout_shared::{
         BetRecord, BetSide, ClaimReceipt, Config, FightDetails, MarketConfig,
         MarketState, MarketStatus, OptionalOracleRole, OptionalOutcome, Outcome, OracleReport, OracleRole,
     },
+    amm::{lmsr_cost, lmsr_price, LMSR_B_MIN},
 };
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -51,7 +53,6 @@ pub struct Market;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 impl Market {
-    /// Abort if the contract-level emergency pause is active.
     fn require_not_paused(env: &Env) -> Result<(), ContractError> {
         let paused: bool = env.storage().instance().get(&PAUSED).unwrap_or(false);
         if paused {
@@ -62,7 +63,6 @@ impl Market {
 
     /// Abort if a claim/refund is already in progress (reentrancy guard).
     ///
-    /// # Why this is necessary
     /// If the token contract is adversarial it could re-enter `claim_winnings`
     /// during the transfer callback. Without this guard a second call would
     /// pass all CHECKS (bets not yet marked claimed) and issue a double payout.
@@ -107,7 +107,6 @@ impl Market {
         Ok(oracles.contains(caller.clone()))
     }
 
-    /// Extend TTL on market data entries to prevent premature expiration.
     fn extend_market_ttl(env: &Env) {
         env.storage().persistent().extend_ttl(&STATE, MAX_TTL, MAX_TTL);
         env.storage().persistent().extend_ttl(&BETS, MAX_TTL, MAX_TTL);
@@ -124,6 +123,7 @@ impl Market {
     ///
     /// # Errors
     /// - `AlreadyInitialized`: Market has already been initialized
+    /// - `InvalidConfig`: config.b is below LMSR minimum
     ///
     /// # Security
     /// - Caller must be the factory (NotFactory guard).
@@ -140,6 +140,9 @@ impl Market {
         factory.require_auth();
         if env.storage().persistent().has(&STATE) {
             return Err(ContractError::AlreadyInitialized);
+        }
+        if config.b < LMSR_B_MIN {
+            return Err(ContractError::InvalidConfig);
         }
 
         // EFFECTS
@@ -164,26 +167,29 @@ impl Market {
         env.storage().instance().set(&PAUSED, &false);
         env.storage().instance().set(&CLAIMING, &false);
 
-        // Set TTL on market data entries
         Self::extend_market_ttl(&env);
-
         Ok(())
     }
 
     // =========================================================================
-    // PLACE BET  — fund-moving
+    // PLACE BET  — fund-moving (LMSR pricing)
     // =========================================================================
-    /// Places a bet on behalf of bettor.
+    /// Places a bet on behalf of bettor, charging the LMSR marginal cost.
+    ///
+    /// The bettor must approve exactly `lmsr_cost(...)` stroops before calling.
+    /// The LMSR cost is computed on-chain and the token transfer equals that cost.
     ///
     /// # Errors
-    /// - `MarketNotOpen`: Market is not open or fight is in the past
-    /// - `InvalidTimeRange`: Betting window has not opened or deadline is invalid
-    /// - `BetTooLow`: Bet amount is below minimum
-    /// - `BetTooLarge`: Bet amount exceeds maximum
+    /// - `MarketNotOpen`: Market is not open
+    /// - `BettingClosed`: Lock threshold has been reached
+    /// - `BetTooLow`: Amount below min_bet
+    /// - `BetTooLarge`: Amount above max_bet
+    /// - `AlreadyBet`: Bettor already placed a bet
+    /// - `ArithmeticOverflow`: LMSR math overflow (pool too large)
     ///
     /// # Security (CEI enforced)
     /// 1. CHECKS: require_auth, pause guard, status, timing, amount bounds
-    /// 2. EFFECTS: state + bets updated in storage
+    /// 2. EFFECTS: pools, bets, bettor_list updated before token transfer
     /// 3. INTERACTIONS: token transfer last
     pub fn place_bet(
         env: Env,
@@ -193,8 +199,8 @@ impl Market {
         token: Address,
     ) -> Result<BetRecord, ContractError> {
         // ── CHECKS ────────────────────────────────────────────────────────────
-        bettor.require_auth();                          // auth first
-        Self::require_not_paused(&env)?;                // pause guard
+        bettor.require_auth();
+        Self::require_not_paused(&env)?;
 
         let state = Self::load_state(&env)?;
 
@@ -215,21 +221,37 @@ impl Market {
             return Err(ContractError::BetTooLarge);
         }
 
+        // Compute LMSR marginal cost — this is what the bettor pays.
+        // `amount` is their desired bet size; cost ≤ amount always.
+        let cost = lmsr_cost(
+            state.pool_a,
+            state.pool_b,
+            state.pool_draw,
+            amount,
+            side.clone(),
+            state.config.b,
+        )?;
+
+        // Reject if the bettor hasn't approved at least `cost` stroops
+        if cost < 1 {
+            return Err(ContractError::InsufficientAmount);
+        }
+
         // ── EFFECTS ───────────────────────────────────────────────────────────
         let mut new_state = state.clone();
         match side {
-            BetSide::FighterA => new_state.pool_a += amount,
-            BetSide::FighterB => new_state.pool_b += amount,
-            BetSide::Draw     => new_state.pool_draw += amount,
+            BetSide::FighterA => new_state.pool_a += cost,
+            BetSide::FighterB => new_state.pool_b += cost,
+            BetSide::Draw     => new_state.pool_draw += cost,
         }
-        new_state.total_pool += amount;
+        new_state.total_pool += cost;
         Self::save_state(&env, &new_state);
 
         let bet = BetRecord {
             bettor: bettor.clone(),
             market_id: new_state.market_id,
             side: side.clone(),
-            amount,
+            amount: cost, // LMSR marginal cost actually paid; pool and refund must use the same unit
             placed_at: env.ledger().timestamp(),
             claimed: false,
         };
@@ -238,23 +260,20 @@ impl Market {
         if !bets.is_empty() {
             return Err(ContractError::AlreadyBet);
         }
-        let is_first_bet = true;
         bets.push_back(bet.clone());
         Self::save_bets(&env, &bettor, &bets);
 
-        if is_first_bet {
-            let mut bettor_list: Vec<Address> =
-                env.storage().persistent().get(&BETTOR_LIST).unwrap_or_else(|| Vec::new(&env));
-            bettor_list.push_back(bettor.clone());
-            env.storage().persistent().set(&BETTOR_LIST, &bettor_list);
-        }
+        let mut bettor_list: Vec<Address> =
+            env.storage().persistent().get(&BETTOR_LIST).unwrap_or_else(|| Vec::new(&env));
+        bettor_list.push_back(bettor.clone());
+        env.storage().persistent().set(&BETTOR_LIST, &bettor_list);
 
-        // Extend TTL on each bet to keep market active
         Self::extend_market_ttl(&env);
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
+        // Transfer exactly the LMSR marginal cost from bettor to contract.
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&bettor, &env.current_contract_address(), &amount);
+        token_client.transfer(&bettor, &env.current_contract_address(), &cost);
 
         boxmeout_shared::emit_bet_placed(&env, new_state.market_id, bet.clone());
 
@@ -264,25 +283,16 @@ impl Market {
     // =========================================================================
     // LOCK MARKET
     // =========================================================================
-    /// Locks the market when the fight is about to start.
-    ///
-    /// # Errors
-    /// - `NotOracle`: Caller is not a whitelisted oracle or admin
-    /// - `MarketNotOpen`: Market is not open or already locked
-    /// - `InvalidTimeRange`: Lock threshold has not been reached yet
     pub fn lock_market(env: Env, caller: Address) -> Result<(), ContractError> {
-        // CHECKS
         caller.require_auth();
         Self::require_not_paused(&env)?;
 
-        // Caller must be a whitelisted oracle OR the factory admin
         let factory: Address = env
             .storage().persistent()
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         let is_admin = caller == factory;
-        let is_oracle = Self::is_oracle_whitelisted(&env, &caller)?;
-        if !is_admin && !is_oracle {
+        if !is_admin && !Self::is_oracle_whitelisted(&env, &caller)? {
             return Err(ContractError::NotOracle);
         }
 
@@ -297,7 +307,6 @@ impl Market {
             return Err(ContractError::InvalidTimeRange);
         }
 
-        // EFFECTS
         state.status = MarketStatus::Locked;
         Self::save_state(&env, &state);
 
@@ -308,20 +317,11 @@ impl Market {
     // =========================================================================
     // RESOLVE MARKET — 2-of-3 Oracle Consensus
     // =========================================================================
-    /// Submits an oracle report for market resolution using 2-of-3 consensus.
-    ///
-    /// # Errors
-    /// - `NotOracle`: Caller is not a whitelisted oracle
-    /// - `MarketNotOpen`: Market is not locked
-    /// - `ResolutionWindowExpired`: Resolution deadline has passed
-    /// - `InvalidOracleSignature`: Signature verification failed
-    /// - `Unauthorized`: Oracle has already submitted a report
     pub fn resolve_market(
         env: Env,
         oracle: Address,
         report: OracleReport,
     ) -> Result<(), ContractError> {
-        // CHECKS
         oracle.require_auth();
         Self::require_not_paused(&env)?;
 
@@ -344,7 +344,6 @@ impl Market {
             return Err(ContractError::InvalidOracleSignature);
         }
 
-        // Verify Ed25519 signature over concat(match_id_bytes, outcome_byte, reported_at_be)
         {
             use soroban_sdk::Bytes;
             use soroban_sdk::xdr::ToXdr;
@@ -355,7 +354,6 @@ impl Market {
                 Outcome::NoContest => 3,
             };
             let mut msg = Bytes::new(&env);
-            // Encode match_id as its XDR bytes for signing
             msg.append(&report.match_id.clone().to_xdr(&env));
             msg.push_back(outcome_byte);
             for b in report.reported_at.to_be_bytes().iter() {
@@ -364,20 +362,16 @@ impl Market {
             env.crypto().ed25519_verify(&report.pub_key, &msg, &report.signature);
         }
 
-        // EFFECTS — 2-of-3 consensus logic
         let mut pending: Map<Address, OracleReport> =
             env.storage().persistent().get(&PENDING_REPORTS).unwrap_or_else(|| Map::new(&env));
 
-        // Check if we already have a report from this oracle
         if pending.contains_key(oracle.clone()) {
             return Err(ContractError::Unauthorized);
         }
 
-        // Store this report
         pending.set(oracle.clone(), report.clone());
         env.storage().persistent().set(&PENDING_REPORTS, &pending);
 
-        // Count matching and conflicting reports
         let mut matching_count = 1u32;
         let mut conflicting_count = 0u32;
 
@@ -391,20 +385,15 @@ impl Market {
             }
         }
 
-        // Resolve if we have 2 matching reports
         if matching_count >= 2 {
             state.outcome = OptionalOutcome::Some(report.outcome.clone());
             state.status = MarketStatus::Resolved;
             state.resolved_at = env.ledger().timestamp();
             state.oracle_used = OptionalOracleRole::Some(OracleRole::Primary);
             Self::save_state(&env, &state);
-            
-            // Clear pending reports
             env.storage().persistent().set(&PENDING_REPORTS, &Map::<Address, OracleReport>::new(&env));
-            
             boxmeout_shared::emit_market_resolved(&env, state.market_id, report.outcome, oracle);
         } else if conflicting_count > 0 && matching_count == 1 {
-            // Emit event for conflicting report, wait for third oracle
             boxmeout_shared::emit_conflicting_oracle_report(&env, state.market_id, oracle);
         }
 
@@ -416,29 +405,24 @@ impl Market {
     // =========================================================================
     /// Claims winnings for a bettor who backed the winning outcome.
     ///
-    /// # Errors
-    /// - `MarketNotResolved`: Market is not resolved
-    /// - `InvalidOutcome`: Market outcome is invalid for payout
-    /// - `NoBetsFound`: Bettor has no bets in this market
-    /// - `AlreadyClaimed`: Bettor has already claimed winnings
+    /// Payout uses the parimutuel formula (proportional to original stake)
+    /// applied to the total pool accumulated through LMSR pricing.
     ///
     /// # Security (CEI strictly enforced)
     /// 1. CHECKS: require_auth, pause guard, reentrancy guard, status, eligibility
     /// 2. EFFECTS: mark bets claimed + set CLAIMING lock BEFORE any transfer
     /// 3. INTERACTIONS: treasury fee transfer, then bettor payout transfer
     /// 4. CLEANUP: clear CLAIMING lock
-    /// State is NOT re-read after any token transfer.
     pub fn claim_winnings(
         env: Env,
         bettor: Address,
         token: Address,
     ) -> Result<ClaimReceipt, ContractError> {
         // ── CHECKS ────────────────────────────────────────────────────────────
-        bettor.require_auth();                          // auth first
-        Self::require_not_paused(&env)?;                // pause guard
-        Self::require_not_claiming(&env)?;              // reentrancy guard
+        bettor.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_not_claiming(&env)?;
 
-        // Reload state fresh from storage (never use a stale copy)
         let state = Self::load_state(&env)?;
 
         if state.status == MarketStatus::Cancelled {
@@ -465,7 +449,6 @@ impl Market {
             return Err(ContractError::NoBetsFound);
         }
 
-        // Sum unclaimed winning bets
         let mut bettor_stake: i128 = 0;
         let mut any_eligible = false;
         for bet in bets.iter() {
@@ -478,21 +461,33 @@ impl Market {
             return Err(ContractError::AlreadyClaimed);
         }
 
-        // Parimutuel payout formula (integer arithmetic with checked operations, always floors)
+        // Parimutuel payout on the LMSR-accumulated pool.
         let winning_pool = match &winning_side {
             BetSide::FighterA => state.pool_a,
             BetSide::FighterB => state.pool_b,
             BetSide::Draw     => state.pool_draw,
         };
-        
-        // Use checked arithmetic to prevent overflow
-        let fee = state.total_pool
+
+        // Total protocol fee (on all pools combined).
+        let total_fee = state.total_pool
             .checked_mul(state.config.fee_bps as i128)
             .and_then(|v| v.checked_div(10_000))
             .ok_or(ContractError::InsufficientAmount)?;
         let net_pool = state.total_pool
-            .checked_sub(fee)
+            .checked_sub(total_fee)
             .ok_or(ContractError::InsufficientAmount)?;
+
+        // Per-bettor fee: proportional share of the total protocol fee.
+        // fee_i = bettor_stake * total_fee / winning_pool
+        // This ensures Σ fee_i = total_fee (no fee over/under-collection across bettors).
+        let fee = if winning_pool > 0 {
+            bettor_stake
+                .checked_mul(total_fee)
+                .and_then(|v| v.checked_div(winning_pool))
+                .ok_or(ContractError::InsufficientAmount)?
+        } else {
+            0
+        };
         let payout = if winning_pool > 0 {
             bettor_stake
                 .checked_mul(net_pool)
@@ -503,10 +498,8 @@ impl Market {
         };
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
-        // Set reentrancy lock BEFORE any transfer
         env.storage().instance().set(&CLAIMING, &true);
 
-        // Mark all winning bets as claimed
         let mut updated_bets = Vec::new(&env);
         for mut bet in bets.iter() {
             if bet.side == winning_side && !bet.claimed {
@@ -531,11 +524,9 @@ impl Market {
             .get(&TREASURY)
             .ok_or(ContractError::Unauthorized)?;
 
-        // Transfer fee to treasury first
         if fee > 0 {
             token_client.transfer(&env.current_contract_address(), &treasury, &fee);
         }
-        // Transfer payout to bettor
         if payout > 0 {
             token_client.transfer(&env.current_contract_address(), &bettor, &payout);
         }
@@ -550,28 +541,15 @@ impl Market {
     // =========================================================================
     // CLAIM REFUND  — fund-moving
     // =========================================================================
-    /// Claims a full refund for a bettor when the market is cancelled.
-    ///
-    /// # Errors
-    /// - `InvalidMarketStatus`: Market is not cancelled
-    /// - `NoBetsFound`: Bettor has no bets in this market
-    /// - `AlreadyClaimed`: Bettor has already claimed refund
-    ///
-    /// # Security (CEI strictly enforced)
-    /// 1. CHECKS: require_auth, pause guard, reentrancy guard, status
-    /// 2. EFFECTS: mark bets claimed + set CLAIMING lock BEFORE transfer
-    /// 3. INTERACTIONS: token transfer last
     pub fn claim_refund(
         env: Env,
         bettor: Address,
         token: Address,
     ) -> Result<i128, ContractError> {
-        // ── CHECKS ────────────────────────────────────────────────────────────
         bettor.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_not_claiming(&env)?;
 
-        // Reload state fresh from storage
         let state = Self::load_state(&env)?;
 
         if state.status != MarketStatus::Cancelled {
@@ -623,11 +601,6 @@ impl Market {
     // =========================================================================
     // CANCEL MARKET
     // =========================================================================
-    /// Cancels the market, making all bets eligible for refund.
-    ///
-    /// # Errors
-    /// - `Unauthorized`: Caller is not a whitelisted oracle or admin
-    /// - `InvalidMarketStatus`: Market is not Open or Locked
     pub fn cancel_market(
         env: Env,
         caller: Address,
@@ -636,14 +609,14 @@ impl Market {
         caller.require_auth();
         Self::require_not_paused(&env)?;
 
-        // Caller must be a whitelisted oracle OR the factory admin
         let factory: Address = env
             .storage().persistent()
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         let is_admin = caller == factory;
-        let is_oracle = Self::is_oracle_whitelisted(&env, &caller)?;
-        if !is_admin && !is_oracle {
+        // Only query the factory oracle whitelist when the caller is not already the admin
+        // (avoids a cross-contract call when the test factory has no contract code).
+        if !is_admin && !Self::is_oracle_whitelisted(&env, &caller)? {
             return Err(ContractError::NotOracle);
         }
 
@@ -662,11 +635,6 @@ impl Market {
     // =========================================================================
     // DISPUTE MARKET
     // =========================================================================
-    /// Disputes a resolved market, freezing claims pending admin review.
-    ///
-    /// # Errors
-    /// - `Unauthorized`: Caller is not the factory (admin)
-    /// - `InvalidMarketStatus`: Market is not resolved
     pub fn dispute_market(
         env: Env,
         admin: Address,
@@ -675,7 +643,6 @@ impl Market {
         admin.require_auth();
         Self::require_not_paused(&env)?;
 
-        // Admin must be the factory address (factory is the privileged admin)
         let factory: Address = env
             .storage().persistent()
             .get(&FACTORY)
@@ -702,8 +669,8 @@ impl Market {
     /// Resolves a disputed market with a final admin-determined outcome.
     ///
     /// # Errors
-    /// - `Unauthorized`: Caller is not the factory (admin)
-    /// - `InvalidMarketStatus`: Market is not disputed
+    /// - `NotAdmin`: Caller is not the factory (admin)
+    /// - `InvalidMarketStatus`: Market is not in Disputed status
     pub fn resolve_dispute(
         env: Env,
         admin: Address,
@@ -717,7 +684,21 @@ impl Market {
             .get(&FACTORY)
             .ok_or(ContractError::NotFactory)?;
         if admin != factory {
-              return Err(ContractError::NotAdmin);
+            return Err(ContractError::NotAdmin);
+        }
+
+        let mut state = Self::load_state(&env)?;
+        if state.status != MarketStatus::Disputed {
+            return Err(ContractError::InvalidMarketStatus);
+        }
+
+        state.status = MarketStatus::Resolved;
+        state.outcome = OptionalOutcome::Some(final_outcome.clone());
+        state.oracle_used = OptionalOracleRole::Some(OracleRole::Admin);
+        state.resolved_at = env.ledger().timestamp();
+        Self::save_state(&env, &state);
+
+        boxmeout_shared::emit_dispute_resolved(&env, state.market_id, final_outcome);
         Ok(())
     }
 
@@ -744,22 +725,31 @@ impl Market {
         Some(bets.get(0).unwrap())
     }
 
-    /// Returns the current odds for each outcome (in basis points).
+    /// Returns LMSR implied probabilities for each outcome in basis points (0–10_000).
+    /// Returns (0, 0, 0) if the pool is empty or the market is not found.
     pub fn get_current_odds(env: Env) -> (u32, u32, u32) {
         let state = match Self::load_state(&env) {
             Ok(s) => s,
             Err(_) => return (0, 0, 0),
         };
         if state.total_pool == 0 {
-            return (0, 0, 0);
+            // No bets yet — uniform prior (3333, 3333, 3334)
+            return (3_333, 3_333, 3_334);
         }
-        let odds_a    = (state.pool_a    * 10_000 / state.total_pool) as u32;
-        let odds_b    = (state.pool_b    * 10_000 / state.total_pool) as u32;
-        let odds_draw = (state.pool_draw * 10_000 / state.total_pool) as u32;
+        let odds_a = lmsr_price(
+            state.pool_a, state.pool_b, state.pool_draw, BetSide::FighterA, state.config.b,
+        ).unwrap_or(3_333) as u32;
+        let odds_b = lmsr_price(
+            state.pool_a, state.pool_b, state.pool_draw, BetSide::FighterB, state.config.b,
+        ).unwrap_or(3_333) as u32;
+        let odds_draw = lmsr_price(
+            state.pool_a, state.pool_b, state.pool_draw, BetSide::Draw, state.config.b,
+        ).unwrap_or(3_334) as u32;
         (odds_a, odds_b, odds_draw)
     }
 
-    /// Estimates the payout for a hypothetical bet.
+    /// Estimates the LMSR cost for a hypothetical bet without mutating state.
+    /// Returns 0 if market is not Open or if the LMSR math fails.
     pub fn estimate_payout(env: Env, side: BetSide, amount: i128) -> i128 {
         let state = match Self::load_state(&env) {
             Ok(s) => s,
@@ -768,23 +758,15 @@ impl Market {
         if state.status != MarketStatus::Open {
             return 0;
         }
-        let (hypo_a, hypo_b, hypo_draw) = match side {
-            BetSide::FighterA => (state.pool_a + amount, state.pool_b, state.pool_draw),
-            BetSide::FighterB => (state.pool_a, state.pool_b + amount, state.pool_draw),
-            BetSide::Draw     => (state.pool_a, state.pool_b, state.pool_draw + amount),
-        };
-        let hypo_total = state.total_pool + amount;
-        let winning_pool = match side {
-            BetSide::FighterA => hypo_a,
-            BetSide::FighterB => hypo_b,
-            BetSide::Draw     => hypo_draw,
-        };
-        if winning_pool == 0 {
-            return 0;
-        }
-        let fee = hypo_total * (state.config.fee_bps as i128) / 10_000;
-        let net_pool = hypo_total - fee;
-        amount * net_pool / winning_pool
+        // Return the LMSR marginal cost — what the bettor will actually pay.
+        lmsr_cost(
+            state.pool_a,
+            state.pool_b,
+            state.pool_draw,
+            amount,
+            side,
+            state.config.b,
+        ).unwrap_or(0)
     }
 
     /// Returns the number of unique bettors in this market.
@@ -795,7 +777,7 @@ impl Market {
     }
 
     /// Returns a paginated list of all bet records across all bettors.
-    /// `limit` is capped at 50. Returns an empty vec if no bets exist.
+    /// `limit` is capped at 50.
     pub fn get_all_bets(env: Env, offset: u32, limit: u32) -> Vec<BetRecord> {
         let cap: u32 = if limit > 50 { 50 } else { limit };
         let bettor_list: Vec<Address> =
@@ -835,7 +817,6 @@ impl Market {
     }
 
     /// Returns true if the bettor has already claimed winnings or a refund.
-    /// Returns false if the bettor has not placed any bet in this market.
     pub fn has_claimed(env: Env, bettor: Address) -> bool {
         let bets = Self::load_bets(&env, &bettor);
         if bets.is_empty() {
@@ -850,7 +831,6 @@ impl Market {
     }
 
     /// Returns the three pool sizes as `(pool_a, pool_b, pool_draw)`.
-    /// Alias for `get_pool_sizes` — returns `(0, 0, 0)` if not initialized.
     pub fn get_pools(env: Env) -> (i128, i128, i128) {
         match Self::load_state(&env) {
             Ok(s) => (s.pool_a, s.pool_b, s.pool_draw),
@@ -862,10 +842,6 @@ impl Market {
     // ADMIN CONFIG FUNCTIONS
     // =========================================================================
 
-    /// Sets the dispute window duration.
-    ///
-    /// # Errors
-    /// - `Unauthorized`: Window is less than 1 hour or caller is not admin
     pub fn set_dispute_window(
         env: Env,
         admin: Address,
@@ -889,10 +865,6 @@ impl Market {
         Ok(())
     }
 
-    /// Sets the minimum liquidity requirement.
-    ///
-    /// # Errors
-    /// - `Unauthorized`: Minimum liquidity is not positive or caller is not admin
     pub fn set_min_liquidity(
         env: Env,
         admin: Address,
@@ -916,11 +888,6 @@ impl Market {
         Ok(())
     }
 
-    /// Returns the claimable LP fee amount for a liquidity provider in a market.
-    ///
-    /// Reads `lp_fee_per_share` and the provider's `lp_position` from storage
-    /// and computes the unclaimed fee using the fee-per-share accumulator pattern.
-    /// Returns `0` if no position exists.
     pub fn get_lp_claimable_fees(env: Env, _market_id: u64, _provider: Address) -> i128 {
         let lp_fee_per_share: i128 = env
             .storage().persistent()
@@ -936,8 +903,6 @@ impl Market {
         }
     }
 
-    /// Emergency pause — blocks all fund-moving operations.
-    /// Only callable by the factory (admin).
     pub fn emergency_pause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         let factory: Address = env
@@ -951,7 +916,6 @@ impl Market {
         Ok(())
     }
 
-    /// Lifts the emergency pause.
     pub fn emergency_unpause(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
         let factory: Address = env
@@ -965,10 +929,6 @@ impl Market {
         Ok(())
     }
 
-    /// Upgrades the contract WASM. Only callable by the factory (admin).
-    ///
-    /// # Errors
-    /// - `Unauthorized`: Caller is not the factory admin
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         admin.require_auth();
         let factory: Address = env

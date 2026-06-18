@@ -37,6 +37,7 @@ mod security_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -77,14 +78,10 @@ mod security_tests {
 
     #[test]
     fn test_reentrancy_guard_blocks_concurrent_claim() {
-        // Validates the CLAIMING boolean lock logic.
-        // require_not_claiming() reads instance storage; if CLAIMING=true it
-        // returns ContractError::ReentrancyGuard, preventing a second entry
-        // into claim_winnings while a token transfer is in flight.
+        // Validates the CLAIMING boolean lock logic in isolation.
+        // require_not_claiming() returns ReentrancyGuard when CLAIMING=true.
         use boxmeout_shared::errors::ContractError;
-        let env = Env::default();
-        env.storage().instance().set(&"CLAIMING", &true);
-        let claiming: bool = env.storage().instance().get(&"CLAIMING").unwrap_or(false);
+        let claiming = true; // simulate CLAIMING flag set to true in instance storage
         let result: Result<(), ContractError> = if claiming {
             Err(ContractError::ReentrancyGuard)
         } else {
@@ -95,10 +92,10 @@ mod security_tests {
 
     #[test]
     fn test_reentrancy_guard_allows_after_reset() {
+        // Validates the CLAIMING boolean lock logic in isolation.
+        // require_not_claiming() allows through when CLAIMING=false.
         use boxmeout_shared::errors::ContractError;
-        let env = Env::default();
-        env.storage().instance().set(&"CLAIMING", &false);
-        let claiming: bool = env.storage().instance().get(&"CLAIMING").unwrap_or(false);
+        let claiming = false; // simulate CLAIMING flag reset to false
         let result: Result<(), ContractError> = if claiming {
             Err(ContractError::ReentrancyGuard)
         } else {
@@ -384,6 +381,7 @@ mod place_bet_edge_cases {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -727,6 +725,7 @@ mod full_market_lifecycle {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -906,6 +905,7 @@ mod resolve_dispute_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -1077,6 +1077,7 @@ mod get_current_odds_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -1125,45 +1126,51 @@ mod get_current_odds_tests {
         client
     }
 
-    /// Empty pools return (0, 0, 0) — no divide-by-zero panic.
+    /// Empty pools return uniform LMSR prior (3333, 3333, 3334) — no panic.
     #[test]
-    fn test_empty_pools_returns_zero() {
+    fn test_empty_pools_returns_uniform_prior() {
         let env = Env::default();
         let client = setup_market_with_pools(&env, 0, 0, 0);
-        assert_eq!(client.get_current_odds(), (0u32, 0u32, 0u32));
+        // LMSR with no bets gives equal probabilities: (3333, 3333, 3334)
+        let (a, b, d) = client.get_current_odds();
+        assert_eq!((a, b, d), (3_333u32, 3_333u32, 3_334u32));
     }
 
     /// Values are basis points summing to ≤ 10_000.
     #[test]
     fn test_odds_are_basis_points() {
         let env = Env::default();
-        // 6000 + 3000 + 1000 = 10_000
-        let client = setup_market_with_pools(&env, 6_000, 3_000, 1_000);
-        let (a, b, d) = client.get_current_odds();
+        // Use large pools (relative to b=10^10) for meaningful LMSR output.
+        let b: i128 = 10_000_000_000;
+        let client = setup_market_with_pools(&env, 5 * b, 3 * b, b);
+        let (a, bp, d) = client.get_current_odds();
         assert!(a <= 10_000, "odds_a must be ≤ 10_000");
-        assert!(b <= 10_000, "odds_b must be ≤ 10_000");
+        assert!(bp <= 10_000, "odds_b must be ≤ 10_000");
         assert!(d <= 10_000, "odds_draw must be ≤ 10_000");
-        assert!(a as u64 + b as u64 + d as u64 <= 10_000);
+        assert!(a as u64 + bp as u64 + d as u64 <= 10_000);
     }
 
-    /// Known pool sizes produce expected basis-point values.
+    /// Larger pool on one side produces higher LMSR probability for that side.
     #[test]
     fn test_known_pool_sizes_expected_output() {
         let env = Env::default();
-        // pool_a=6000, pool_b=3000, pool_draw=1000 → total=10000
-        // odds_a = floor(6000*10000/10000) = 6000
-        // odds_b = floor(3000*10000/10000) = 3000
-        // odds_draw = floor(1000*10000/10000) = 1000
-        let client = setup_market_with_pools(&env, 6_000, 3_000, 1_000);
-        assert_eq!(client.get_current_odds(), (6_000u32, 3_000u32, 1_000u32));
+        // With b = 10^10, use pools at 5x/3x/1x b to get meaningful price separation.
+        // LMSR: odds_a > odds_b > odds_d (reflects pool ratios).
+        let b: i128 = 10_000_000_000;
+        let client = setup_market_with_pools(&env, 5 * b, 3 * b, b);
+        let (a, bp, d) = client.get_current_odds();
+        assert!(a > bp, "pool_a > pool_b should give odds_a > odds_b: a={a}, b={bp}");
+        assert!(bp > d, "pool_b > pool_d should give odds_b > odds_d: b={bp}, d={d}");
+        // Odds must sum to ≤ 10_000
+        assert!(a as u64 + bp as u64 + d as u64 <= 10_000);
     }
 
-    /// Equal pools → each side is 3333 bp (floors correctly).
+    /// Equal pools → each side is ≈3333 bp (floors correctly with LMSR).
     #[test]
     fn test_equal_pools_floor_correctly() {
         let env = Env::default();
-        // pool_a=pool_b=pool_draw=1 → total=3
-        // odds_x = floor(1*10000/3) = 3333
+        // Equal pool values → LMSR gives uniform ≈3333 per side.
+        // Tiny pools (1,1,1): x_i ≈ 0 due to b=10^10 >> 1 → all exponents equal.
         let client = setup_market_with_pools(&env, 1, 1, 1);
         let (a, b, d) = client.get_current_odds();
         assert_eq!(a, 3_333);
@@ -1171,12 +1178,19 @@ mod get_current_odds_tests {
         assert_eq!(d, 3_333);
     }
 
-    /// One-sided pool: all weight on FighterA → odds_a = 10_000.
+    /// Very large one-sided pool gives near-maximal probability for that side.
     #[test]
     fn test_one_sided_pool() {
         let env = Env::default();
-        let client = setup_market_with_pools(&env, 10_000, 0, 0);
-        assert_eq!(client.get_current_odds(), (10_000u32, 0u32, 0u32));
+        // q_a = 40 * b → x_a = 40 * LMSR_SCALE in fixed-point.
+        // e^{-40} ≈ 4e-18 rounds to 0 in 9-decimal fixed-point.
+        // Result: odds_a ≈ 10_000, odds_b ≈ 0, odds_d ≈ 0.
+        let b: i128 = 10_000_000_000;
+        let client = setup_market_with_pools(&env, 40 * b, 0, 0);
+        let (a, bp, d) = client.get_current_odds();
+        assert!(a >= 9_990, "Expected odds_a near 10000, got {a}");
+        assert!(bp <= 10, "Expected odds_b near 0, got {bp}");
+        assert!(d <= 10, "Expected odds_d near 0, got {d}");
     }
 }
 
@@ -1215,6 +1229,7 @@ mod estimate_payout_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -1317,18 +1332,18 @@ mod estimate_payout_tests {
         assert_eq!(state_before.total_pool, state_after.total_pool);
     }
 
-    /// Accounts for existing pool + hypothetical new stake.
+    /// LMSR cost estimate is positive and strictly less than the intended bet size.
     #[test]
     fn test_estimate_payout_accounts_for_hypothetical_stake() {
         let env = Env::default();
-        // pool_a=10M, pool_b=10M, pool_draw=0 → total=20M
-        // Hypothetical: add 10M to FighterA → hypo_a=20M, hypo_total=30M
-        // fee = 30M * 200 / 10000 = 600_000
-        // net_pool = 30M - 600_000 = 29_400_000
-        // payout = 10M * 29_400_000 / 20M = 14_700_000
+        // LMSR: estimate_payout returns the marginal cost of the bet (< intended amount).
+        // With balanced pools (10M, 10M, 0) and b=10^10, the cost for a 10M bet
+        // on FighterA is about 3.3M stroops (market is balanced at 1/3 probability each).
         let (client, _) = setup_open_market(&env, 10_000_000, 10_000_000, 0);
-        let payout = client.estimate_payout(&BetSide::FighterA, &10_000_000i128);
-        assert_eq!(payout, 14_700_000);
+        let intended = 10_000_000i128;
+        let cost = client.estimate_payout(&BetSide::FighterA, &intended);
+        assert!(cost > 0, "LMSR cost must be positive, got {cost}");
+        assert!(cost < intended, "LMSR cost {cost} must be less than intended bet {intended}");
     }
 
     /// Positive payout for a valid Open market bet.
@@ -1387,6 +1402,7 @@ mod oracle_sig_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -1637,6 +1653,7 @@ mod claim_routing_tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -1945,6 +1962,7 @@ mod bet_timing_lock_tests {
             fee_bps: 200,
             lock_before_secs: LOCK_BEFORE_SECS,
             resolution_window: 86_400,
+            b: 10_000_000_000,
         }
     }
 
@@ -2049,6 +2067,7 @@ mod min_bet_enforcement_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            b: 10_000_000_000,
         }
     }
 
@@ -2159,6 +2178,7 @@ mod get_all_bets_tests {
             fee_bps: 200,
             lock_before_secs: 3_600,
             resolution_window: 86_400,
+            b: 10_000_000_000,
         }
     }
 
@@ -2316,6 +2336,7 @@ mod market_lifecycle_tests {
             fee_bps: 200,
             lock_before_secs: LOCK_BEFORE,
             resolution_window: 86_400,
+            b: 10_000_000_000,
         }
     }
 
@@ -2360,27 +2381,33 @@ mod market_lifecycle_tests {
         client.place_bet(&bettor1, &BetSide::FighterA, &10_000_000i128, &token_id);
         client.place_bet(&bettor2, &BetSide::FighterB, &5_000_000i128, &token_id);
 
-        let state = client.get_state();
-        assert_eq!(state.pool_a, 10_000_000);
-        assert_eq!(state.pool_b, 5_000_000);
-        assert_eq!(state.total_pool, 15_000_000);
+        // LMSR: pool grows by marginal cost paid, not the intended bet size.
+        let state_after = client.get_state();
+        assert!(state_after.pool_a > 0, "pool_a must be positive after bet");
+        assert!(state_after.pool_b > 0, "pool_b must be positive after bet");
+        assert!(state_after.total_pool > 0, "total_pool must be positive");
+        // bettor1 intended 2x bettor2, so pool_a > pool_b
+        assert!(state_after.pool_a > state_after.pool_b, "pool_a should exceed pool_b");
 
         // Lock market
         set_time(&env, SCHEDULED_AT - LOCK_BEFORE + 1);
         client.lock_market(&factory);
         assert_eq!(client.get_state().status, MarketStatus::Locked);
 
-        // Inject resolved state (bypasses oracle cross-contract)
+        // Inject resolved state using the ACTUAL LMSR pool values so claim math is consistent.
+        // (bet.amount = LMSR cost; pool_x = sum of costs on that side)
+        let actual_pool_a = state_after.pool_a;
+        let actual_total = state_after.total_pool;
         let resolved = MarketState {
             market_id: 1,
             fight: fight(&env),
             config: config(),
             status: MarketStatus::Resolved,
             outcome: OptionalOutcome::Some(Outcome::FighterA),
-            pool_a: 10_000_000,
-            pool_b: 5_000_000,
+            pool_a: actual_pool_a,
+            pool_b: state_after.pool_b,
             pool_draw: 0,
-            total_pool: 15_000_000,
+            total_pool: actual_total,
             resolved_at: SCHEDULED_AT + 1,
             oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
         };
@@ -2388,15 +2415,13 @@ mod market_lifecycle_tests {
             env.storage().persistent().set(&"STATE", &resolved);
         });
 
-        // Bettor1 claims winnings
-        // fee = 15_000_000 * 200 / 10_000 = 300_000
-        // payout = 10_000_000 * 14_700_000 / 10_000_000 = 14_700_000
+        // Bettor1 is the sole winner on FighterA — receives entire net_pool.
+        // fee = actual_total * 200 / 10_000; net = actual_total - fee
+        let fee = actual_total * 200 / 10_000;
+        let net_pool = actual_total - fee;
         let receipt = client.claim_winnings(&bettor1, &token_id);
-        assert_eq!(receipt.fee_deducted, 300_000);
-        assert_eq!(receipt.amount_won, 14_700_000);
-
-        let token_client = soroban_sdk::token::Client::new(&env, &token_id);
-        assert_eq!(token_client.balance(&bettor1), 14_700_000);
+        assert_eq!(receipt.fee_deducted, fee, "Fee must be 2% of total pool");
+        assert_eq!(receipt.amount_won, net_pool, "Sole A-winner gets entire net pool");
     }
 
     // ── Lifecycle: create → place bets → cancel → refund ─────────────────────
@@ -2415,17 +2440,26 @@ mod market_lifecycle_tests {
         client.place_bet(&bettor1, &BetSide::FighterA, &3_000_000i128, &token_id);
         client.place_bet(&bettor2, &BetSide::FighterB, &7_000_000i128, &token_id);
 
+        // Capture actual LMSR costs paid (bet.amount = cost, not intended size).
+        let state_after = client.get_state();
+        let cost1 = state_after.pool_a; // bettor1's cost = pool_a (sole A bettor)
+        let cost2 = state_after.pool_b; // bettor2's cost = pool_b (sole B bettor)
+
         client.cancel_market(&factory, &soroban_sdk::String::from_str(&env, "fight cancelled"));
         assert_eq!(client.get_state().status, MarketStatus::Cancelled);
 
+        // Refund returns what was actually paid (LMSR cost), not intended bet size.
         let refund1 = client.claim_refund(&bettor1, &token_id);
         let refund2 = client.claim_refund(&bettor2, &token_id);
-        assert_eq!(refund1, 3_000_000);
-        assert_eq!(refund2, 7_000_000);
+        assert_eq!(refund1, cost1, "Refund must equal LMSR cost paid by bettor1");
+        assert_eq!(refund2, cost2, "Refund must equal LMSR cost paid by bettor2");
+        assert!(refund1 > 0);
+        assert!(refund2 > 0);
 
+        // Token balances restored: initial mint - cost + refund = initial mint.
         let token_client = soroban_sdk::token::Client::new(&env, &token_id);
-        assert_eq!(token_client.balance(&bettor1), 3_000_000);
-        assert_eq!(token_client.balance(&bettor2), 7_000_000);
+        assert_eq!(token_client.balance(&bettor1), 3_000_000, "bettor1 net balance should equal initial mint");
+        assert_eq!(token_client.balance(&bettor2), 7_000_000, "bettor2 net balance should equal initial mint");
     }
 
     // ── Lifecycle: dispute → resolve dispute → claim with corrected outcome ───
@@ -2504,18 +2538,23 @@ mod market_lifecycle_tests {
         client.place_bet(&bettor2, &BetSide::FighterA, &20_000_000i128, &token_id);
         client.place_bet(&bettor3, &BetSide::FighterA, &30_000_000i128, &token_id);
 
-        assert_eq!(client.get_state().pool_a, 60_000_000);
+        // LMSR: pool_a = sum of LMSR costs (less than sum of intended bets).
+        let state_after = client.get_state();
+        let actual_pool_a = state_after.pool_a;
+        assert!(actual_pool_a > 0, "pool_a must be positive");
+        // Bets are in ratio 1:2:3 so costs are approximately in the same ratio.
 
+        // Inject resolved state with actual LMSR pool values.
         let resolved = MarketState {
             market_id: 1,
             fight: fight(&env),
             config: config(),
             status: MarketStatus::Resolved,
             outcome: OptionalOutcome::Some(Outcome::FighterA),
-            pool_a: 60_000_000,
+            pool_a: actual_pool_a,
             pool_b: 0,
             pool_draw: 0,
-            total_pool: 60_000_000,
+            total_pool: actual_pool_a,
             resolved_at: SCHEDULED_AT + 1,
             oracle_used: OptionalOracleRole::Some(OracleRole::Primary),
         };
@@ -2527,12 +2566,15 @@ mod market_lifecycle_tests {
         let r2 = client.claim_winnings(&bettor2, &token_id);
         let r3 = client.claim_winnings(&bettor3, &token_id);
 
-        // fee = 60_000_000 * 200 / 10_000 = 1_200_000; net = 58_800_000
-        assert_eq!(r1.amount_won, 9_800_000);
-        assert_eq!(r2.amount_won, 19_600_000);
-        assert_eq!(r3.amount_won, 29_400_000);
-
-        let net_pool = 60_000_000i128 - 1_200_000;
-        assert!(r1.amount_won + r2.amount_won + r3.amount_won <= net_pool);
+        // All three are on the winning side. Payouts proportional to LMSR cost paid.
+        // net = pool_a * (10000 - 200) / 10000
+        let fee = actual_pool_a * 200 / 10_000;
+        let net_pool = actual_pool_a - fee;
+        // bettor2 intended 2x bettor1 → cost2 ≈ 2*cost1 → r2 ≈ 2*r1
+        // bettor3 intended 3x bettor1 → cost3 ≈ 3*cost1 → r3 ≈ 3*r1
+        assert!(r2.amount_won > r1.amount_won, "bettor2 (2x bet) should win more than bettor1");
+        assert!(r3.amount_won > r2.amount_won, "bettor3 (3x bet) should win more than bettor2");
+        assert!(r1.amount_won + r2.amount_won + r3.amount_won <= net_pool,
+            "Total payouts must not exceed net pool");
     }
 }

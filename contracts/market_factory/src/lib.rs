@@ -6,6 +6,7 @@
 use soroban_sdk::{contract, contractimpl, contractclient, Address, Env, Vec, Map, BytesN};
 
 use boxmeout_shared::{
+    amm::LMSR_B_MIN,
     errors::ContractError,
     types::{BetRecord, FactoryConfig, MarketConfig, MarketState, MarketStatus, FightDetails, UserPosition},
 };
@@ -93,6 +94,7 @@ impl MarketFactory {
             fee_bps: config.default_fee_bps,
             lock_before_secs: config.default_lock_before_secs,
             resolution_window: config.default_resolution_window,
+            b: config.default_b,
         };
         env.storage().persistent().set(&DEFAULT_CONFIG, &default_config);
 
@@ -172,6 +174,11 @@ impl MarketFactory {
 
         let mut effective_config = config;
         effective_config.fee_bps = effective_fee_bps;
+
+        // LMSR liquidity parameter must be at or above the minimum.
+        if effective_config.b < LMSR_B_MIN {
+            return Err(ContractError::InvalidConfig);
+        }
 
         let market_id: u64 = env.storage().persistent().get(&MARKET_COUNT).unwrap_or(0);
         let new_count = market_id + 1;
@@ -484,7 +491,7 @@ impl MarketFactory {
 
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Vec};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String, Vec};
     use boxmeout_shared::types::{FactoryConfig, FightDetails, MarketConfig};
     use crate::{MarketFactory, MarketFactoryClient};
 
@@ -503,6 +510,7 @@ mod tests {
             default_fee_bps: 200,
             default_lock_before_secs: 3600,
             default_resolution_window: 86400,
+            default_b: 10_000_000_000,
         }
     }
 
@@ -525,6 +533,7 @@ mod tests {
             fee_bps: 200,
             lock_before_secs: 3600,
             resolution_window: 86400,
+            b: 10_000_000_000,
         }
     }
 
@@ -590,6 +599,17 @@ mod tests {
     #[test]
     fn test_create_market_fails_when_fight_in_past() {
         let (env, client) = setup();
+        // Ensure timestamp is non-zero before subtracting 1 to avoid u64 underflow.
+        env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+            timestamp: 1_000,
+            protocol_version: 20,
+            sequence_number: 100,
+            network_id: Default::default(),
+            base_reserve: 1,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6_311_520,
+        });
         init_factory(&env, &client);
 
         let mut fight = sample_fight(&env);

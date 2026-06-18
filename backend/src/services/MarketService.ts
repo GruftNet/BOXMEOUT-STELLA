@@ -242,78 +242,106 @@ export async function getMarketById(market_id: string): Promise<MarketWithOdds> 
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// LMSR helpers (TypeScript may use Math.exp/Math.log; only the Soroban WASM contract
+// is restricted to integer arithmetic)
+// ---------------------------------------------------------------------------
+
+/** LMSR default b = 1000 XLM in stroops. Used when the DB row lacks lmsr_b. */
+const LMSR_B_DEFAULT = 10_000_000_000n;
+
 /**
- * Returns live odds for a market.
- *
- * Formula: odds_x = floor(pool_x * 10_000 / total_pool)
- * Falls back to querying the Market contract via StellarService.readContractState()
- * if DB pool sizes are stale (updated_at older than 30 seconds).
+ * LMSR cost function: C(q) = b * ln(e^(q_a/b) + e^(q_b/b) + e^(q_d/b)).
+ * Uses log-sum-exp trick (subtract max) for numerical stability.
+ */
+function lmsrCostFn(q_a: number, q_b: number, q_d: number, b: number): number {
+  const xA = q_a / b;
+  const xB = q_b / b;
+  const xD = q_d / b;
+  const maxX = Math.max(xA, xB, xD);
+  return b * (maxX + Math.log(Math.exp(xA - maxX) + Math.exp(xB - maxX) + Math.exp(xD - maxX)));
+}
+
+/**
+ * LMSR implied probabilities for a 3-outcome market, expressed in basis points (0..10000).
+ * p_i = e^(q_i/b) / Σ e^(q_j/b).
+ * Uses log-sum-exp trick for numerical stability.
+ * Returns uniform prior {a:3333, b:3333, draw:3334} when all pools are zero.
+ */
+function lmsrPriceBps(
+  q_a: bigint, q_b: bigint, q_draw: bigint, b: bigint,
+): { a: number; b: number; draw: number } {
+  const bF = Number(b);
+  const xA = Number(q_a) / bF;
+  const xB = Number(q_b) / bF;
+  const xD = Number(q_draw) / bF;
+
+  const maxX = Math.max(xA, xB, xD);
+  const eA = Math.exp(xA - maxX);
+  const eB = Math.exp(xB - maxX);
+  const eD = Math.exp(xD - maxX);
+  const sum = eA + eB + eD;
+
+  const pA = Math.floor((eA / sum) * 10000);
+  const pB = Math.floor((eB / sum) * 10000);
+  const pD = 10000 - pA - pB; // assign remainder to draw so bps sum to exactly 10000
+
+  return { a: pA, b: pB, draw: pD };
+}
+
+/**
+ * LMSR marginal cost for a bet of `delta` stroops on `outcome` given current pools.
+ * cost = C(q + Δe_i) - C(q). Always less than delta.
+ */
+function lmsrMarginalCost(
+  q_a: bigint, q_b: bigint, q_draw: bigint, delta: bigint, outcome: string, b: bigint,
+): bigint {
+  const bF = Number(b);
+  const qA = Number(q_a); const qB = Number(q_b); const qD = Number(q_draw);
+  const dF = Number(delta);
+  const before = lmsrCostFn(qA, qB, qD, bF);
+  const after = outcome === 'fighter_a'
+    ? lmsrCostFn(qA + dF, qB, qD, bF)
+    : outcome === 'fighter_b'
+      ? lmsrCostFn(qA, qB + dF, qD, bF)
+      : lmsrCostFn(qA, qB, qD + dF, bF);
+  return BigInt(Math.round(after - before));
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns live LMSR odds for a market in basis points.
+ * Computes p_i = e^(q_i/b) / Σ e^(q_j/b) from pool quantities stored in DB.
+ * Falls back to on-chain read when DB row is stale (updated_at > 30 s ago).
  */
 export async function getMarketOdds(market_id: string): Promise<MarketOdds> {
   const market = await db().findMarketById(market_id);
   if (!market) throw AppError.notFound(`Market not found: ${market_id}`);
 
   const now = new Date();
-  const isStale = (now.getTime() - market.updated_at.getTime()) > 30_000; // 30 seconds
+  const isStale = (now.getTime() - market.updated_at.getTime()) > 30_000;
 
-  let pool_a: bigint, pool_b: bigint, pool_draw: bigint, total_pool: bigint;
+  let q_a: bigint, q_b: bigint, q_draw: bigint;
 
   if (isStale) {
-    // Fallback to on-chain read
-    // Assume readContractState returns { pool_a: string, pool_b: string, pool_draw: string, total_pool: string }
-    const onChainData = await StellarService.readContractState(market.contract_address, 'get_pools', []) as { pool_a: string; pool_b: string; pool_draw: string; total_pool: string };
-    pool_a = BigInt(onChainData.pool_a);
-    pool_b = BigInt(onChainData.pool_b);
-    pool_draw = BigInt(onChainData.pool_draw);
-    total_pool = BigInt(onChainData.total_pool);
+    const onChainData = await StellarService.readContractState(market.contract_address, 'get_state', []) as { pool_a: string; pool_b: string; pool_draw: string };
+    q_a = BigInt(onChainData.pool_a);
+    q_b = BigInt(onChainData.pool_b);
+    q_draw = BigInt(onChainData.pool_draw);
   } else {
-    pool_a = BigInt(market.pool_a);
-    pool_b = BigInt(market.pool_b);
-    pool_draw = BigInt(market.pool_draw);
-    total_pool = BigInt(market.total_pool);
+    q_a = BigInt(market.pool_a);
+    q_b = BigInt(market.pool_b);
+    q_draw = BigInt(market.pool_draw);
   }
 
-  if (total_pool === 0n) return { odds_a: 0, odds_b: 0, odds_draw: 0 };
-
-  return {
-    odds_a: Number(pool_a * 10000n / total_pool),
-    odds_b: Number(pool_b * 10000n / total_pool),
-    odds_draw: Number(pool_draw * 10000n / total_pool),
-  };
+  const b = BigInt(market.lmsr_b ?? LMSR_B_DEFAULT);
+  const { a, b: bps_b, draw } = lmsrPriceBps(q_a, q_b, q_draw, b);
+  return { odds_a: a, odds_b: bps_b, odds_draw: draw };
 }
 
-/**
- * Calculates parimutuel odds for a market.
- * 
- * Formula: odds_x = total_pool / outcome_pool
- * Returns all three odds as floats rounded to 2 decimal places.
- * Returns { fighterA: 0, fighterB: 0, draw: 0 } for empty pools.
- */
-export async function calculateOdds(market_id: string): Promise<{ fighterA: number; fighterB: number; draw: number }> {
-  const market = await db().findMarketById(market_id);
-  if (!market) throw AppError.notFound(`Market not found: ${market_id}`);
 
-  const total_pool = BigInt(market.total_pool);
-  const pool_a = BigInt(market.pool_a);
-  const pool_b = BigInt(market.pool_b);
-  const pool_draw = BigInt(market.pool_draw);
-
-  if (total_pool === 0n) {
-    return { fighterA: 0, fighterB: 0, draw: 0 };
-  }
-
-  const fighterA = pool_a === 0n ? 0 : Number((total_pool * 100n) / pool_a) / 100;
-  const fighterB = pool_b === 0n ? 0 : Number((total_pool * 100n) / pool_b) / 100;
-  const draw = pool_draw === 0n ? 0 : Number((total_pool * 100n) / pool_draw) / 100;
-
-  return {
-    fighterA: Math.round(fighterA * 100) / 100,
-    fighterB: Math.round(fighterB * 100) / 100,
-    draw: Math.round(draw * 100) / 100,
-  };
-}
-
-/** Shared pool loader for odds calculations. */
+/** Shared market loader for odds calculations. */
 async function loadMarketPools(market_id: string) {
   const market = await db().findMarketById(market_id);
   if (!market) throw AppError.notFound(`Market not found: ${market_id}`);
@@ -322,72 +350,77 @@ async function loadMarketPools(market_id: string) {
     poolA: BigInt(market.pool_a),
     poolB: BigInt(market.pool_b),
     poolDraw: BigInt(market.pool_draw),
-    feeBps: BigInt(market.fee_bps),
+    feeBps: market.fee_bps,
     totalPoolStr: market.total_pool,
+    b: BigInt(market.lmsr_b ?? LMSR_B_DEFAULT),
   };
 }
 
-/** Build an OutcomeOdds from raw pool values. */
-function computeOutcomeOdds(
-  pool: bigint,
+/**
+ * Build an OutcomeOdds from LMSR implied probability (basis points).
+ *
+ * LMSR payout multiplier = (net_pool / winning_pool) ≈ (1 - fee) / p_i for large pools.
+ * For small/empty pools we fall back to the LMSR probability directly.
+ *
+ * implied_probability — directly from LMSR p_i in bps → percent.
+ * multiplier          — (net_pool / outcome_pool) when outcome_pool > 0, else 0.
+ */
+function buildOutcomeOdds(
+  priceBps: number,
+  outcomePool: bigint,
   totalPool: bigint,
-  feeBps: bigint,
+  feeBps: number,
   outcome: string,
   totalPoolStr: string,
 ): OutcomeOdds {
-  if (totalPool === 0n || pool === 0n) {
-    return { outcome, multiplier: 0, implied_probability: 0, pool: pool.toString(), total_pool: totalPoolStr };
+  const implied_probability = priceBps / 100;
+
+  let multiplier = 0;
+  if (outcomePool > 0n && totalPool > 0n) {
+    const fee = (totalPool * BigInt(feeBps)) / 10000n;
+    const netPool = totalPool - fee;
+    multiplier = Math.round((Number(netPool) / Number(outcomePool)) * 100) / 100;
   }
-  const fee = (totalPool * feeBps) / 10000n;
-  const netPool = totalPool - fee;
-  const multiplier = Number((netPool * 10000n) / pool) / 10000;
-  const implied_probability = Number((pool * 10000n) / totalPool) / 100;
+
   return {
     outcome,
-    multiplier: Math.round(multiplier * 100) / 100,
+    multiplier,
     implied_probability: Math.round(implied_probability * 100) / 100,
-    pool: pool.toString(),
+    pool: outcomePool.toString(),
     total_pool: totalPoolStr,
   };
 }
 
 /**
- * Calculates parimutuel odds for a single specific outcome.
- *
- * Parimutuel formula:
- *   multiplier = (total_pool - fee) / outcome_pool
- *   implied_probability = outcome_pool / total_pool
- *
- * Returns zero multiplier/probability for empty pools.
+ * Returns LMSR-derived odds for a single outcome.
+ * implied_probability = e^(q_i/b) / Σ e^(q_j/b).
+ * multiplier = net_pool / outcome_pool (parimutuel payout on LMSR-accumulated pools).
  */
 export async function calculateSingleOutcomeOdds(
   market_id: string,
   outcome: 'fighter_a' | 'fighter_b' | 'draw',
 ): Promise<OutcomeOdds> {
-  const { totalPool, poolA, poolB, poolDraw, feeBps, totalPoolStr } = await loadMarketPools(market_id);
+  const { totalPool, poolA, poolB, poolDraw, feeBps, totalPoolStr, b } = await loadMarketPools(market_id);
+  const prices = lmsrPriceBps(poolA, poolB, poolDraw, b);
+  const priceBps = outcome === 'fighter_a' ? prices.a : outcome === 'fighter_b' ? prices.b : prices.draw;
   const pool = outcome === 'fighter_a' ? poolA : outcome === 'fighter_b' ? poolB : poolDraw;
-  return computeOutcomeOdds(pool, totalPool, feeBps, outcome, totalPoolStr);
+  return buildOutcomeOdds(priceBps, pool, totalPool, feeBps, outcome, totalPoolStr);
 }
 
 /**
- * Calculates parimutuel odds for all three outcomes.
- *
- * Parimutuel formula (per outcome):
- *   multiplier = (total_pool - fee) / outcome_pool
- *   implied_probability = outcome_pool / total_pool
- *
- * Returns zeros for outcomes with empty pools.
+ * Returns LMSR-derived odds for all three outcomes.
+ * implied_probability = e^(q_i/b) / Σ e^(q_j/b), expressed as a percentage.
+ * multiplier = net_pool / outcome_pool (parimutuel payout on LMSR-accumulated pools).
  */
-export async function calculateOutcomeOdds(
-  market_id: string,
-): Promise<AllOutcomeOdds> {
-  const { totalPool, poolA, poolB, poolDraw, feeBps, totalPoolStr } = await loadMarketPools(market_id);
+export async function calculateOutcomeOdds(market_id: string): Promise<AllOutcomeOdds> {
+  const { totalPool, poolA, poolB, poolDraw, feeBps, totalPoolStr, b } = await loadMarketPools(market_id);
+  const prices = lmsrPriceBps(poolA, poolB, poolDraw, b);
 
   return {
     market_id,
-    fighter_a: computeOutcomeOdds(poolA, totalPool, feeBps, 'fighter_a', totalPoolStr),
-    fighter_b: computeOutcomeOdds(poolB, totalPool, feeBps, 'fighter_b', totalPoolStr),
-    draw: computeOutcomeOdds(poolDraw, totalPool, feeBps, 'draw', totalPoolStr),
+    fighter_a: buildOutcomeOdds(prices.a, poolA, totalPool, feeBps, 'fighter_a', totalPoolStr),
+    fighter_b: buildOutcomeOdds(prices.b, poolB, totalPool, feeBps, 'fighter_b', totalPoolStr),
+    draw: buildOutcomeOdds(prices.draw, poolDraw, totalPool, feeBps, 'draw', totalPoolStr),
     total_pool: totalPoolStr,
   };
 }
@@ -413,42 +446,10 @@ export async function getBetsByAddress(bettor_address: string): Promise<Bet[]> {
   } as Bet));
 }
 
-export async function getBettorStats(bettor_address: string): Promise<BettorStats> {
-  const bets = await getBetsByAddress(bettor_address);
-  const total_bets = bets.length;
-  const total_wagered_xlm = bets.reduce((sum, bet) => sum + Number(bet.amount) / 10_000_000, 0);
-  const total_winnings_xlm = bets.reduce(
-    (sum, bet) => sum + (bet.payout ? Number(bet.payout) / 10_000_000 : 0),
-    0,
-  );
-
-  const winCount = bets.filter((bet) => bet.payout && BigInt(bet.payout) > 0n).length;
-  const win_rate = total_bets === 0 ? 0 : Math.round((winCount / total_bets) * 10000) / 100;
-
-  const favoriteFighterCounts = bets.reduce<Record<string, number>>((counts, bet) => {
-    counts[bet.side] = (counts[bet.side] || 0) + 1;
-    return counts;
-  }, {});
-
-  const favorite_fighter = Object.entries(favoriteFighterCounts).reduce<string | null>((winner, [side, count]) => {
-    if (winner === null) return side;
-    const currentCount = favoriteFighterCounts[winner] ?? 0;
-    return count > currentCount ? side : winner;
-  }, null);
-
-  return {
-    bettor_address,
-    total_bets,
-    total_wagered_xlm,
-    total_winnings_xlm,
-    win_rate,
-    favorite_fighter,
-  };
-}
-
 /**
  * Returns aggregate statistics for a bettor address.
- * Totals are computed in XLM. Returns zeroed stats when no bets exist.
+ * Totals are computed in XLM (divide stroops by 10_000_000).
+ * Returns zeroed stats when no bets exist.
  */
 export async function getBettorStats(bettor_address: string): Promise<BettorStats> {
   const bets = await getBetsByAddress(bettor_address);
@@ -468,12 +469,15 @@ export async function getBettorStats(bettor_address: string): Promise<BettorStat
     return count > (outcomeCounts[best] ?? 0) ? side : best;
   }, null);
 
-  const win_rate = total_bets === 0 ? 0 : Math.round((bets.filter((bet) => bet.claimed && bet.payout).length * 10000) / total_bets) / 100;
+  const win_rate = total_bets === 0
+    ? 0
+    : Math.round((bets.filter((bet) => bet.claimed && bet.payout).length * 10000) / total_bets) / 100;
 
   return {
+    bettor_address,
+    total_bets,
     total_wagered_xlm,
     total_winnings_xlm,
-    total_bets,
     win_rate,
     favorite_fighter,
   };
@@ -594,12 +598,16 @@ export async function getPortfolioByAddress(
 }
 
 /**
- * Simulates projected payout for a hypothetical bet on a market.
+ * Simulates projected payout for a hypothetical bet on a market using LMSR pricing.
  *
- * Parimutuel formula:
- *   payout = (hypothetical_amount / outcome_pool) * (total_pool - fee)
+ * Steps:
+ *   1. Compute LMSR marginal cost: cost = C(q + Δe_i) - C(q)  (cost ≤ amount always)
+ *   2. Projected winning pool after this bet: outcome_pool + cost
+ *   3. Projected total pool: total_pool + cost
+ *   4. Projected net pool: (total_pool + cost) * (1 - fee)
+ *   5. Projected payout: cost / (outcome_pool + cost) * net_pool
  *
- * Returns zero if the outcome pool is empty or the market is cancelled.
+ * Returns zero when the market is cancelled or amount is non-positive.
  */
 export async function simulateProjectedPayout(
   market_id: string,
@@ -609,39 +617,30 @@ export async function simulateProjectedPayout(
   const market = await db().findMarketById(market_id);
   if (!market) throw AppError.notFound(`Market not found: ${market_id}`);
 
-  if (market.status === 'cancelled') {
-    return { amount: '0', formatted_xlm: 0 };
-  }
+  if (market.status === 'cancelled') return { amount: '0', formatted_xlm: 0 };
 
-  const betAmount = BigInt(amount);
-  if (betAmount <= 0n) {
-    return { amount: '0', formatted_xlm: 0 };
-  }
+  const delta = BigInt(amount);
+  if (delta <= 0n) return { amount: '0', formatted_xlm: 0 };
 
+  const q_a = BigInt(market.pool_a);
+  const q_b = BigInt(market.pool_b);
+  const q_draw = BigInt(market.pool_draw);
   const total_pool = BigInt(market.total_pool);
-  const fee_bps = market.fee_bps;
-  const fee = (total_pool * BigInt(fee_bps)) / 10000n;
-  const pool_after_fee = total_pool - fee;
+  const b = BigInt(market.lmsr_b ?? LMSR_B_DEFAULT);
 
-  let winning_pool: bigint;
-  if (outcome === 'fighter_a') {
-    winning_pool = BigInt(market.pool_a);
-  } else if (outcome === 'fighter_b') {
-    winning_pool = BigInt(market.pool_b);
-  } else {
-    winning_pool = BigInt(market.pool_draw);
-  }
+  const cost = lmsrMarginalCost(q_a, q_b, q_draw, delta, outcome, b);
+  if (cost <= 0n) return { amount: '0', formatted_xlm: 0 };
 
-  if (winning_pool <= 0n) {
-    return { amount: '0', formatted_xlm: 0 };
-  }
+  const winning_pool_before = outcome === 'fighter_a' ? q_a : outcome === 'fighter_b' ? q_b : q_draw;
+  const winning_pool_after = winning_pool_before + cost;
+  const total_after = total_pool + cost;
+  const fee = (total_after * BigInt(market.fee_bps)) / 10000n;
+  const net_pool = total_after - fee;
 
-  const payout = (betAmount * pool_after_fee) / winning_pool;
-  const formatted_xlm = Number(payout) / 10_000_000;
-
+  const payout = (cost * net_pool) / winning_pool_after;
   return {
     amount: payout.toString(),
-    formatted_xlm,
+    formatted_xlm: Number(payout) / 10_000_000,
   };
 }
 
