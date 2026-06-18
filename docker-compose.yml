@@ -41,6 +41,44 @@ services:
     ports:
       - '3001:3001'
 
+  backend-1:
+    profiles: [cluster]
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: ./backend/.env
+    ports:
+      - '3001:3001'
+
+  backend-2:
+    profiles: [cluster]
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: ./backend/.env
+    ports:
+      - '3002:3001'
+
+  nginx-ws:
+    profiles: [cluster]
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend-1
+      - backend-2
+    ports:
+      - '8080:80'
+    volumes:
+      - ./nginx/ws-cluster.conf:/etc/nginx/conf.d/default.conf:ro
+
   frontend:
     build: ./frontend
     restart: unless-stopped

@@ -1,9 +1,14 @@
 // tests/integration/activity-feed.integration.test.ts
-// Integration test: buy shares → WebSocket client receives trade event
+// Integration test: buy shares → WebSocket client receives trade event via Redis pub/sub
 
 import http from 'http';
 import { WebSocket } from 'ws';
-import { ActivityFeed, type ActivityEvent } from '../../src/websocket/realtime';
+import { connectRedisClients } from '../../src/config/redis';
+import {
+  ActivityFeed,
+  initRedisSubscriberForTest,
+  type ActivityEvent,
+} from '../../src/websocket/realtime';
 
 function waitForMessage(ws: WebSocket, timeoutMs = 1000): Promise<ActivityEvent> {
   return new Promise((resolve, reject) => {
@@ -20,18 +25,22 @@ describe('ActivityFeed integration', () => {
   let feed: ActivityFeed;
   let port: number;
 
-  beforeAll((done) => {
+  beforeAll(async () => {
+    await connectRedisClients();
     server = http.createServer();
     feed = new ActivityFeed(server);
-    server.listen(0, () => {
-      port = (server.address() as { port: number }).port;
-      done();
+    await initRedisSubscriberForTest(feed);
+    await new Promise<void>((resolve) => {
+      server.listen(0, () => {
+        port = (server.address() as { port: number }).port;
+        resolve();
+      });
     });
   });
 
-  afterAll((done) => {
-    feed.close();
-    server.close(done);
+  afterAll(async () => {
+    await feed.shutdown();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   it('delivers a trade event to a subscribed client after buying shares', async () => {
@@ -99,7 +108,7 @@ describe('ActivityFeed integration', () => {
       feed.publish({ type: 'trade', marketId: 'market-rl', outcomeId: 'o', side: 'buy', sharesAmount: i, priceBps: 1, timestamp: '' });
     }
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
     expect(received).toHaveLength(20);
 
     ws.close();
