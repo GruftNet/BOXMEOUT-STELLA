@@ -10,6 +10,8 @@ import {
   buildTradesCsv,
 } from '../services/export.service';
 import { sendExportReadyEmail } from '../services/email.service';
+import { getRiskEngine } from '../services/RiskEngine';
+import { getOrSet } from '../services/cache.service';
 
 const router = Router();
 
@@ -441,6 +443,29 @@ router.post('/export/request', requireAdmin, async (req: Request, res: Response,
         logger.error({ msg: 'Async export failed', err });
       }
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/risk/exposure:
+ *   get:
+ *     summary: Real-time pool exposure and circuit breaker status (admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Imbalance ratios for all open markets, platform total exposure, and last 10 circuit breaker events
+ *       401:
+ *         description: Unauthorized
+ */
+router.get('/risk/exposure', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await getOrSet('admin:risk:exposure', 10, () => getRiskEngine().getExposureReport());
+    res.json(report);
   } catch (err) {
     next(err);
   }

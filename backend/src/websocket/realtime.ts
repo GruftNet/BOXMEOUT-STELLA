@@ -1,7 +1,27 @@
+import { EventEmitter } from 'events';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import { logger } from '../utils/logger';
+
+// ---------------------------------------------------------------------------
+// Internal event bus — used by BetService to notify RiskEngine of new bets
+// without polling. Keeps the risk engine decoupled from the WS layer.
+// ---------------------------------------------------------------------------
+const _betPlacedBus = new EventEmitter();
+_betPlacedBus.setMaxListeners(20);
+
+export function emitBetPlaced(marketId: string): void {
+  _betPlacedBus.emit('BetPlaced', marketId);
+}
+
+export function onBetPlaced(handler: (marketId: string) => void): void {
+  _betPlacedBus.on('BetPlaced', handler);
+}
+
+export function offBetPlaced(handler: (marketId: string) => void): void {
+  _betPlacedBus.off('BetPlaced', handler);
+}
 
 // ---------------------------------------------------------------------------
 // Event types

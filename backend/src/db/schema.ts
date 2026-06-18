@@ -199,6 +199,23 @@ export const distributions = pgTable(
   }),
 );
 
+export const circuit_breaker_events = pgTable(
+  'circuit_breaker_events',
+  {
+    id: serial('id').primaryKey(),
+    market_id: text('market_id').notNull(),
+    trigger_type: text('trigger_type').notNull(),
+    imbalance_ratio: numeric('imbalance_ratio', { precision: 10, scale: 6 }).notNull(),
+    total_pool_xlm: numeric('total_pool_xlm', { precision: 20, scale: 7 }).notNull(),
+    triggered_at: timestamp('triggered_at', { withTimezone: true }).notNull().defaultNow(),
+    resolved_at: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (table) => ({
+    market_id_idx: index('circuit_breaker_events_market_id_idx').on(table.market_id),
+    trigger_type_idx: index('circuit_breaker_events_trigger_type_idx').on(table.trigger_type),
+  }),
+);
+
 export type Market = typeof markets.$inferSelect;
 export type NewMarket = typeof markets.$inferInsert;
 export type Bet = typeof bets.$inferSelect;
@@ -212,3 +229,5 @@ export type UserSession = typeof user_sessions.$inferSelect;
 export type PasswordResetToken = typeof password_reset_tokens.$inferSelect;
 export type Distribution = typeof distributions.$inferSelect;
 export type NewDistribution = typeof distributions.$inferInsert;
+export type CircuitBreakerEvent = typeof circuit_breaker_events.$inferSelect;
+export type NewCircuitBreakerEvent = typeof circuit_breaker_events.$inferInsert;
