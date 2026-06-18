@@ -1,60 +1,63 @@
 // ============================================================
 // BOXMEOUT — OddsDisplay Component
-// Shows parimutuel multipliers and implied probabilities for all three outcomes.
+// Shows LMSR-derived implied probabilities and payout multipliers.
+// Odds are computed on the server via getMarketOdds() and passed in
+// as basis points (0..10000). This component only renders.
 // ============================================================
 
 interface OddsDisplayProps {
-  pool_a: string;
-  pool_b: string;
-  pool_draw: string;
+  /** LMSR implied probability for FighterA in basis points (0..10000). */
+  odds_a: number;
+  /** LMSR implied probability for FighterB in basis points (0..10000). */
+  odds_b: number;
+  /** LMSR implied probability for Draw in basis points (0..10000). */
+  odds_draw: number;
+  /** Platform fee in basis points used to compute payout multiplier. */
   fee_bps: number;
   fighter_a: string;
   fighter_b: string;
 }
 
-interface Outcome {
+interface OutcomeRow {
   label: string;
-  pool: bigint;
+  odds_bps: number;
   color: string;
 }
 
-/** Parimutuel multiplier = (total_pool * (1 - fee)) / outcome_pool. Returns null when pool is zero. */
-function multiplier(outcomePool: bigint, totalPool: bigint, feeBps: number): number | null {
-  if (outcomePool === 0n || totalPool === 0n) return null;
-  const net = totalPool * BigInt(10000 - feeBps);
-  return Number(net) / Number(outcomePool) / 10000;
+/**
+ * Payout multiplier ≈ (1 - fee) / p_i.
+ * Returns null when price is zero (no bets yet on that side).
+ */
+function multiplier(odds_bps: number, fee_bps: number): number | null {
+  if (odds_bps <= 0) return null;
+  return (10000 - fee_bps) / odds_bps;
 }
 
 export function OddsDisplay({
-  pool_a,
-  pool_b,
-  pool_draw,
+  odds_a,
+  odds_b,
+  odds_draw,
   fee_bps,
   fighter_a,
   fighter_b,
 }: Readonly<OddsDisplayProps>): JSX.Element {
-  const a = BigInt(pool_a);
-  const b = BigInt(pool_b);
-  const d = BigInt(pool_draw);
-  const total = a + b + d;
-
-  const outcomes: Outcome[] = [
-    { label: fighter_a, pool: a, color: 'text-red-400' },
-    { label: 'Draw',    pool: d, color: 'text-gray-400' },
-    { label: fighter_b, pool: b, color: 'text-blue-400' },
+  const outcomes: OutcomeRow[] = [
+    { label: fighter_a, odds_bps: odds_a,    color: 'text-red-400'  },
+    { label: 'Draw',    odds_bps: odds_draw, color: 'text-gray-400' },
+    { label: fighter_b, odds_bps: odds_b,    color: 'text-blue-400' },
   ];
 
-  const maxPool = BigInt(Math.max(...outcomes.map(o => Number(o.pool))));
-  const hasFavorite = total > 0n;
+  const maxOdds = Math.max(odds_a, odds_b, odds_draw);
+  const hasBets = maxOdds > 0;
 
   return (
     <div className="flex gap-2">
-      {outcomes.map(({ label, pool, color }) => {
-        const mult = multiplier(pool, total, fee_bps);
-        const impliedPct = total > 0n && pool > 0n
-          ? ((Number(pool) / Number(total)) * 100).toFixed(0)
-          : null;
-        const isFavorite = hasFavorite && pool === maxPool;
+      {outcomes.map(({ label, odds_bps, color }) => {
+        const mult = multiplier(odds_bps, fee_bps);
+        // Implied probability shown as percent, e.g. 3333 bps → "33%"
+        const impliedPct = odds_bps > 0 ? (odds_bps / 100).toFixed(0) : null;
+        // Favorite = highest LMSR implied probability (most bets)
+        const isFavorite = hasBets && odds_bps === maxOdds;
 
         return (
           <div

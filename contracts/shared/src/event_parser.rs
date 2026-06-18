@@ -377,7 +377,7 @@ mod tests {
     fn test_parse_invalid_topics_returns_error() {
         let (env, _id) = setup();
         let empty: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
-        let dummy_data: soroban_sdk::Val = soroban_sdk::Val::from_void();
+        let dummy_data: soroban_sdk::Val = soroban_sdk::Val::from_void().into();
         let result = parse_market_locked_event(&env, &empty, &dummy_data);
         assert_eq!(result.unwrap_err(), ParseError::InvalidLength);
     }

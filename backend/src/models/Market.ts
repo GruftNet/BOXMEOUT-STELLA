@@ -37,6 +37,8 @@ export interface Market {
   updated_at: Date;
   /** Stellar ledger sequence at which this market was created */
   ledger_sequence: number;
+  /** LMSR liquidity parameter b in stroops. Defaults to 10_000_000_000 (1000 XLM) if absent. */
+  lmsr_b?: string;
 }
 
 export type MarketStatusDB =

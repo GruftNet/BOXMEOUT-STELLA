@@ -79,6 +79,9 @@ pub struct MarketConfig {
     pub lock_before_secs: u64,
     /// Seconds after scheduled_at within which oracle must resolve
     pub resolution_window: u64,
+    /// LMSR liquidity parameter in stroops; controls price impact per bet.
+    /// Larger b = lower impact. Default 10_000_000_000 (1000 XLM). Min 100_000_000 (10 XLM).
+    pub b: i128,
 }
 
 /// Configuration passed to MarketFactory on initialization.
@@ -95,6 +98,9 @@ pub struct FactoryConfig {
     pub default_lock_before_secs: u64,
     /// Seconds after scheduled_at within which oracle must resolve (new markets)
     pub default_resolution_window: u64,
+    /// Default LMSR liquidity parameter in stroops for newly created markets.
+    /// Default 10_000_000_000 (1000 XLM). Min 100_000_000 (10 XLM).
+    pub default_b: i128,
 }
 
 /// Global configuration for the prediction market system.
