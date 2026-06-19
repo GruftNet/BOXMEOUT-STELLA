@@ -5,6 +5,7 @@
 
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
+import type { Market, MarketListResponse, LeaderboardEntry } from '../../types';
 import type { Market, Proposal } from '../../types';
 import type { MarketListResponse, ProposalListResponse } from '../../services/api';
 
@@ -82,6 +83,18 @@ export const handlers = [
     };
 
     return HttpResponse.json(response);
+  }),
+
+  // GET /api/leaderboard
+  http.get(`${API_BASE}/api/leaderboard`, ({ request }) => {
+    const url = new URL(request.url);
+    const metric = url.searchParams.get('metric') ?? 'won';
+    let sorted = [...mockLeaderboard];
+    if (metric === 'bets') sorted.sort((a, b) => b.bet_count - a.bet_count);
+    else if (metric === 'winrate') sorted = sorted.filter((e) => e.bet_count >= 10).sort((a, b) => b.win_rate - a.win_rate);
+    else sorted.sort((a, b) => b.total_won_xlm - a.total_won_xlm);
+    const ranked = sorted.map((e, i) => ({ ...e, rank: i + 1 }));
+    return HttpResponse.json(ranked);
   }),
 
   // GET /api/markets/:market_id
@@ -247,3 +260,40 @@ export const resolvedMarket: Market = {
   ...mockMarkets[1],
   status: 'resolved',
 };
+
+// ─── Leaderboard ──────────────────────────────────────────────────────────────
+
+export const mockLeaderboard: LeaderboardEntry[] = [
+  {
+    rank: 1,
+    bettor_address: 'GDKFABCD1234ABCD5678ABCD9012ABCD3456EFGHIJKL',
+    total_staked_xlm: 50000.00,
+    total_won_xlm: 85000.00,
+    bet_count: 45,
+    win_rate: 68.42,
+  },
+  {
+    rank: 2,
+    bettor_address: 'GCONWXYZ5678WXYZ9012WXYZ3456WXYZ7890WXYZMNOP',
+    total_staked_xlm: 32000.00,
+    total_won_xlm: 48000.00,
+    bet_count: 32,
+    win_rate: 62.50,
+  },
+  {
+    rank: 3,
+    bettor_address: 'GBVYSS33IUACWLMXQ6K7LQXQE4FHFFSQK75BQSB7NJZL67WTDQ4IIHL',
+    total_staked_xlm: 12000.00,
+    total_won_xlm: 24000.00,
+    bet_count: 18,
+    win_rate: 55.56,
+  },
+  {
+    rank: 4,
+    bettor_address: 'GA7Q2B4C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9B0C',
+    total_staked_xlm: 8000.00,
+    total_won_xlm: 12000.00,
+    bet_count: 10,
+    win_rate: 50.00,
+  },
+];

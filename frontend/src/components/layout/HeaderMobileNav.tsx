@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 
-type NavLink = { href: string; label: string };
+type NavLink = { href: string; label: string; adminOnly?: boolean };
 
 export function HeaderMobileNav({
   links,

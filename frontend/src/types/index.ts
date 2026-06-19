@@ -123,6 +123,15 @@ export interface Proposal {
 
 export type InvoiceStatus = 'Pending' | 'Funded' | 'Paid';
 
+export interface LeaderboardEntry {
+  rank: number;
+  bettor_address: string;
+  total_staked_xlm: number;
+  total_won_xlm: number;
+  bet_count: number;
+  win_rate: number;
+}
+
 export interface Invoice {
   id: string;
   freelancer: string;
