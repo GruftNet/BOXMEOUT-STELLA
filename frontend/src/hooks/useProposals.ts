@@ -27,7 +27,7 @@ export function useProposals(options?: UseProposalsOptions): UseProposalsResult 
 
   const queryKey = ['proposals', { status, page, limit }];
 
-  const { data, isLoading, isError, error, refetch } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey,
     queryFn: () => fetchProposals({ status, page, limit }),
     staleTime: 30_000,

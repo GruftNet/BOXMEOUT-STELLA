@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getConnectedAddress } from '@/services/wallet';
 import { fetchProposalById } from '@/services/api';
@@ -11,7 +11,6 @@ import type { Proposal, VoteType } from '@/types';
 
 export default function ProposalDetail() {
   const params = useParams();
-  const router = useRouter();
   const id = params.id as string;
 
   const connectedAddress = getConnectedAddress();
@@ -95,8 +94,6 @@ export default function ProposalDetail() {
     Failed: 'bg-red-500/10 text-red-400 border-red-500/20',
     Executed: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   };
-
-  const canVote = connectedAddress && proposal.status === 'Active' && !hasVoted;
 
   return (
     <div className="max-w-4xl mx-auto p-8">
