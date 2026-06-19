@@ -11,6 +11,7 @@ import { logger } from "./utils/logger";
 import authRouter from "./routes/auth.routes";
 import marketRouter from "./routes/market.routes";
 import adminRouter from "./routes/admin.routes";
+import governanceRouter from "./routes/governance.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
@@ -60,6 +61,7 @@ app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);
 app.use("/api/bets", claimsRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/governance", governanceRouter);
 app.post("/trading/bet", (_req, res) => res.json({ ok: true }));
 app.post("/wallet/withdraw", (_req, res) => res.json({ ok: true }));
 
