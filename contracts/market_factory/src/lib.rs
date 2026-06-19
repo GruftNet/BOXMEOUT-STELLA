@@ -8,7 +8,7 @@ use soroban_sdk::{contract, contractimpl, contractclient, Address, Env, Vec, Map
 use boxmeout_shared::{
     amm::LMSR_B_MIN,
     errors::ContractError,
-    types::{BetRecord, FactoryConfig, MarketConfig, MarketState, MarketStatus, FightDetails, UserPosition},
+    types::{BetRecord, FactoryConfig, MarketConfig, MarketState, MarketStatus, FightDetails, UserPosition, ApprovedToken},
 };
 
 const MARKET_COUNT: &str    = "MARKET_COUNT";
@@ -20,6 +20,7 @@ const DEFAULT_CONFIG: &str  = "DEFAULT_CONFIG";
 const TREASURY: &str        = "TREASURY";
 const MARKET_WASM_HASH: &str = "MARKET_WASM_HASH";
 const OPEN_MARKETS: &str    = "OPEN_MARKETS";
+const APPROVED_TOKENS: &str = "APPROVED_TOKENS";
 
 #[contractclient(name = "MarketClient")]
 pub trait MarketInterface {
@@ -384,6 +385,83 @@ impl MarketFactory {
     /// Returns the list of whitelisted oracles.
     pub fn get_oracles(env: Env) -> Vec<Address> {
         env.storage().persistent().get(&ORACLE_WHITELIST).unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Adds an approved token for betting.
+    ///
+    /// # Errors
+    /// - `NotAdmin`: Caller is not the admin
+    pub fn add_approved_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+        max_slippage_bps: u32,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut tokens: Map<Address, ApprovedToken> = env
+            .storage()
+            .persistent()
+            .get(&APPROVED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+
+        tokens.set(
+            token.clone(),
+            ApprovedToken {
+                token,
+                max_slippage_bps,
+                active: true,
+            },
+        );
+        env.storage().persistent().set(&APPROVED_TOKENS, &tokens);
+        Ok(())
+    }
+
+    /// Removes an approved token from the whitelist.
+    ///
+    /// # Errors
+    /// - `NotAdmin`: Caller is not the admin
+    pub fn remove_approved_token(env: Env, admin: Address, token: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let mut tokens: Map<Address, ApprovedToken> = env
+            .storage()
+            .persistent()
+            .get(&APPROVED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+
+        tokens.remove(&token);
+        env.storage().persistent().set(&APPROVED_TOKENS, &tokens);
+        Ok(())
+    }
+
+    /// Gets an approved token by address.
+    pub fn get_approved_token(env: Env, token: Address) -> Option<ApprovedToken> {
+        let tokens: Map<Address, ApprovedToken> = env
+            .storage()
+            .persistent()
+            .get(&APPROVED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+        tokens.get(&token)
+    }
+
+    /// Returns all approved tokens (only active ones).
+    pub fn get_approved_tokens(env: Env) -> Vec<ApprovedToken> {
+        let tokens: Map<Address, ApprovedToken> = env
+            .storage()
+            .persistent()
+            .get(&APPROVED_TOKENS)
+            .unwrap_or_else(|| Map::new(&env));
+
+        let mut result: Vec<ApprovedToken> = Vec::new(&env);
+        for (_, approved) in tokens.iter() {
+            if approved.active {
+                result.push_back(approved);
+            }
+        }
+        result
     }
 
     /// Transfers admin privileges to a new address.
