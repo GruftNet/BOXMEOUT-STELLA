@@ -69,16 +69,7 @@ export default function HomePage(): JSX.Element {
       <StatsBanner />
 
       {/* Filter bar */}
-      <MarketFilters
-        weightClass={weightClass}
-        status={status}
-        sort={sort}
-        onWeightClassChange={(value) =>
-          setParam('weight_class', value === 'All Weight Classes' ? null : value)
-        }
-        onStatusChange={(value) => setParam('status', value === 'All' ? null : value.toLowerCase())}
-        onSortChange={(value) => setParam('sort', value)}
-      />
+      <MarketFilters />
 
       {/* Error banner */}
       {error && (

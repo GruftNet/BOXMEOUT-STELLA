@@ -5,14 +5,8 @@
 
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import type { Market, MarketListResponse, Proposal } from '../../types';
-
-interface ProposalListResponse {
-  proposals: Proposal[];
-  total: number;
-  page: number;
-  limit: number;
-}
+import type { Market, Proposal } from '../../types';
+import type { MarketListResponse, ProposalListResponse } from '../../services/api';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -200,7 +194,7 @@ export const governanceHandlers = [
 
   // POST /api/governance/proposals/:id/vote
   http.post(`${API_BASE}/api/governance/proposals/:id/vote`, async ({ params, request }) => {
-    const { id } = params;
+    const id = params.id as string;
     const body = (await request.json()) as { voter: string; vote: string };
 
     const proposal = mockProposals.find((p) => p.id === id);

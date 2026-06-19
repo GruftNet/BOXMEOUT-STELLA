@@ -23,7 +23,7 @@ export interface UseVoteResult {
 export function useVote(): UseVoteResult {
   const queryClient = useQueryClient();
 
-  const mutation = useMutation<Proposal, Error, UseVoteVariables>({
+  const mutation = useMutation<Proposal, Error, UseVoteVariables, { previousData: unknown }>({
     mutationFn: ({ proposalId, voter, vote }) => submitVote(proposalId, voter, vote),
     onMutate: async ({ proposalId, vote }) => {
       await queryClient.cancelQueries({ queryKey: ['proposals'] });

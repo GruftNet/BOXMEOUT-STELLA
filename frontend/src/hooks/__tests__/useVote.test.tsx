@@ -2,7 +2,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useVote } from '../useVote';
 import { server } from '../../__tests__/mocks/handlers';
-import { mockProposals, resetGovernanceVotes } from '../../__tests__/mocks/handlers';
+import { resetGovernanceVotes } from '../../__tests__/mocks/handlers';
 import { http, HttpResponse } from 'msw';
 import type { ReactNode } from 'react';
 
@@ -142,7 +142,9 @@ describe('useVote', () => {
         result.current.reset();
       });
 
-      expect(result.current.isSuccess).toBe(false);
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(false);
+      });
       expect(result.current.isError).toBe(false);
       expect(result.current.isAlreadyVoted).toBe(false);
     });
