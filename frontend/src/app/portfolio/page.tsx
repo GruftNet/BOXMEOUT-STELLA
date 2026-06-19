@@ -124,7 +124,7 @@ export default function PortfolioPage(): JSX.Element {
         {pendingCount > 0 && (
           <button
             onClick={handleClaimAll}
-            disabled={claimingAll || claimTxStatus.status === 'pending'}
+            disabled={claimingAll || (claimTxStatus.status !== 'idle' && claimTxStatus.status !== 'error')}
             className="min-h-[44px] px-5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-black text-sm"
           >
             {claimingAll ? 'Claiming…' : `Claim All (${pendingCount})`}

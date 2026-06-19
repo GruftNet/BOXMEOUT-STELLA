@@ -4,8 +4,8 @@
 
 import { renderHook, waitFor } from '@testing-library/react';
 import { useMarkets } from '../../hooks/useMarkets';
-import { server } from '../mocks/handlers';
-import { mockMarkets } from '../mocks/handlers';
+import { server } from '../../__tests__/mocks/handlers';
+import { mockMarkets } from '../../__tests__/mocks/handlers';
 import { http, HttpResponse } from 'msw';
 
 describe('useMarkets', () => {
@@ -224,8 +224,8 @@ describe('useMarkets', () => {
 
     it('should update when filters change', async () => {
       const { result, rerender } = renderHook(
-        ({ filters }) => useMarkets(filters),
-        { initialProps: { filters: undefined } }
+        (filters?: { status?: string; weight_class?: string; search?: string }) => useMarkets(filters),
+        { initialProps: undefined as { status?: string; weight_class?: string; search?: string } | undefined }
       );
 
       await waitFor(() => {
@@ -235,7 +235,7 @@ describe('useMarkets', () => {
       const totalCount = result.current.total;
 
       // Change filter
-      rerender({ filters: { status: 'resolved' } });
+      rerender({ status: 'resolved' });
 
       await waitFor(() => {
         expect(result.current.total).toBeLessThan(totalCount);

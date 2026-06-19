@@ -7,7 +7,7 @@
 import {
   Contract,
   Networks,
-  SorobanRpc,
+  rpc,
   TransactionBuilder,
   BASE_FEE,
   xdr,
@@ -35,7 +35,7 @@ export async function buildContractTransaction(
   method: string,
   args: xdr.ScVal[],
 ): Promise<string> {
-  const server = new SorobanRpc.Server(SOROBAN_RPC_URL);
+  const server = new rpc.Server(SOROBAN_RPC_URL);
   const account = await server.getAccount(sourceAddress);
   const contract = new Contract(contractAddress);
 
@@ -49,11 +49,11 @@ export async function buildContractTransaction(
 
   // simulateTransaction fills in the resource footprint and fee estimate
   const simResult = await server.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(simResult)) {
+  if (rpc.Api.isSimulationError(simResult)) {
     throw new Error(`Simulation failed: ${simResult.error}`);
   }
 
-  const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
+  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
   return preparedTx.toXDR();
 }
 
@@ -63,7 +63,7 @@ export async function buildContractTransaction(
  * Returns the transaction hash on success.
  */
 export async function submitTransaction(signedXdr: string): Promise<string> {
-  const server = new SorobanRpc.Server(SOROBAN_RPC_URL);
+  const server = new rpc.Server(SOROBAN_RPC_URL);
   const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
 
   const sendRes = await server.sendTransaction(tx);
