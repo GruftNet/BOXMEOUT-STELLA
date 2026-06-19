@@ -46,7 +46,7 @@ function calcPayout(market: Market, side: BetSide, amountXlm: number): number | 
  */
 export function BetForm({ market }: BetFormProps): JSX.Element {
   const { isConnected } = useWallet();
-  const { placeBet, txStatus, error } = usePlaceBet();
+  const { placeBet, txStatus } = usePlaceBet();
   const setTxStatus = useAppStore((s) => s.setTxStatus);
 
   const [side, setSide] = useState<BetSide | null>(null);

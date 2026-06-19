@@ -84,7 +84,7 @@ function renderTemplate(template: EmailTemplate, data: Record<string, string>): 
   const filePath = path.join(TEMPLATES_DIR, `${template}.html`);
   let html = fs.readFileSync(filePath, 'utf-8');
   for (const [key, value] of Object.entries(data)) {
-    html = html.replaceAll(`{{${key}}}`, value);
+    html = html.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
   }
   return html;
 }

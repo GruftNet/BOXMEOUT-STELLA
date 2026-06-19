@@ -1,4 +1,4 @@
-import { describe, it, expect, jest, beforeAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import request from 'supertest';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -10,8 +10,7 @@ jest.mock('../../src/services/DisputeService');
 
 import * as DisputeService from '../../src/services/DisputeService';
 import { AppError } from '../../src/utils/AppError';
-
-const { default: disputesRouter } = require('../../src/routes/disputes.routes');
+import disputesRouter from '../../src/routes/disputes.routes';
 
 const app = express();
 app.use(express.json());

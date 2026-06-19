@@ -5,7 +5,7 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { useMarket } from '../../hooks/useMarket';
 import { server } from '../mocks/handlers';
-import { openMarket, lockedMarket, resolvedMarket } from '../mocks/handlers';
+import { openMarket, lockedMarket } from '../mocks/handlers';
 import { http, HttpResponse } from 'msw';
 
 describe('useMarket', () => {
