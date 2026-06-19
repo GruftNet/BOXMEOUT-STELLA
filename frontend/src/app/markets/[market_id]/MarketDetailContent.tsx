@@ -92,9 +92,9 @@ export default function MarketDetailContent({ market_id }: { market_id: string }
 
       {/* Odds display with multipliers */}
       <OddsDisplay
-        pool_a={market.pool_a}
-        pool_b={market.pool_b}
-        pool_draw={market.pool_draw}
+        odds_a={market.odds_a}
+        odds_b={market.odds_b}
+        odds_draw={market.odds_draw}
         fee_bps={market.fee_bps}
         fighter_a={market.fighter_a}
         fighter_b={market.fighter_b}

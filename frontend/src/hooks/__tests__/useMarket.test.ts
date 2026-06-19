@@ -6,6 +6,8 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { useMarket } from '../../hooks/useMarket';
 import { server } from '../mocks/handlers';
 import { openMarket, lockedMarket } from '../mocks/handlers';
+import { server } from '../../__tests__/mocks/handlers';
+import { openMarket, lockedMarket } from '../../__tests__/mocks/handlers';
 import { http, HttpResponse } from 'msw';
 
 describe('useMarket', () => {
@@ -398,11 +400,8 @@ describe('useMarket', () => {
     });
 
     it('should not update state after unmount', async () => {
-      let callCount = 0;
-
       server.use(
         http.get('http://localhost:3001/api/markets/market-1', () => {
-          callCount++;
           return HttpResponse.json(openMarket);
         }),
       );

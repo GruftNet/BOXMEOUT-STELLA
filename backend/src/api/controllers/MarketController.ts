@@ -272,6 +272,31 @@ export async function getBetsByAddress(req: Request, res: Response, next: NextFu
 }
 
 /**
+ * GET /api/leaderboard
+ * Query params: metric (won|bets|winrate), limit (default 50)
+ *
+ * Returns ranked leaderboard entries aggregated from the bets table.
+ * Cached for 60 seconds.
+ * Responds 200 with LeaderboardEntry[].
+ */
+export async function getLeaderboard(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const metric = (req.query.metric as string) || 'won';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+
+    if (!['won', 'bets', 'winrate'].includes(metric)) {
+      res.status(400).json({ error: 'metric must be one of: won, bets, winrate' });
+      return;
+    }
+
+    const entries = await MarketService.getLeaderboard(metric as 'won' | 'bets' | 'winrate', limit);
+    res.status(200).json(entries);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/stats
  *
  * Returns aggregate platform statistics for the home page banner.

@@ -96,4 +96,14 @@ pub enum ContractError {
     ArithmeticOverflow = 70,
     /// LMSR liquidity parameter b is below the enforced minimum
     InvalidConfig = 71,
+
+    // ── Token / Path Payment ───────────────────────────────
+    /// Token is not approved for betting on this platform
+    TokenNotApproved = 80,
+    /// Slippage exceeded the user's configured maximum
+    SlippageExceeded = 81,
+    /// Path payment failed to find a conversion route
+    NoPathFound = 82,
+    /// Token conversion failed
+    ConversionFailed = 83,
 }

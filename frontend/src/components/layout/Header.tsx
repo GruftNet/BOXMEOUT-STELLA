@@ -13,6 +13,7 @@ const BANNER_KEY = 'boxmeout_mainnet_banner_dismissed';
 const NAV_LINKS: Array<{ href: string; label: string; adminOnly?: boolean }> = [
   { href: '/', label: 'Home' },
   { href: '/portfolio', label: 'Portfolio' },
+  { href: '/leaderboard', label: 'Leaderboard' },
   { href: '/create', label: 'Create', adminOnly: true },
 ];
 

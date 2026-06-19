@@ -7,10 +7,10 @@ import { useWallet } from '../../hooks/useWallet';
 import { useAppStore } from '../../store';
 
 // Mock wallet service
-const mockConnectWallet = jest.fn<() => Promise<string>>();
-const mockDisconnectWallet = jest.fn<() => void>();
-const mockGetConnectedAddress = jest.fn<() => string | null>();
-const mockGetWalletBalance = jest.fn<() => Promise<number>>();
+const mockConnectWallet = jest.fn(() => Promise.resolve('' as string));
+const mockDisconnectWallet = jest.fn(() => {});
+const mockGetConnectedAddress = jest.fn(() => null as string | null);
+const mockGetWalletBalance = jest.fn(() => Promise.resolve(0 as number));
 
 jest.mock('../../services/wallet', () => ({
   connectWallet: () => mockConnectWallet(),
