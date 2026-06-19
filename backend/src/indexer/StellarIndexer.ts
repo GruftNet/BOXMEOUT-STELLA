@@ -13,6 +13,7 @@ import { pool } from '../config/db';
 import { rpc, Address, xdr } from '@stellar/stellar-sdk';
 import { subscribeToContractEvents, fetchHistoricalEvents } from '../services/StellarService';
 import { cacheDeletePattern } from '../services/cache.service';
+import { publishEvent } from '../websocket/realtime';
 
 // Raw event shape returned by Stellar RPC / Horizon
 export interface RawStellarEvent {
@@ -442,6 +443,16 @@ export async function handleBetPlaced(event: RawStellarEvent): Promise<void> {
   } finally {
     client.release();
   }
+
+  publishEvent(p.market_id as string, {
+    type: 'trade',
+    marketId: p.market_id as string,
+    outcomeId: p.side as string,
+    side: 'buy',
+    sharesAmount: Number(p.amount),
+    priceBps: 0,
+    timestamp: (p.placed_at ?? new Date()).toString(),
+  });
 }
 
 export async function handleMarketLocked(event: RawStellarEvent): Promise<void> {
@@ -508,6 +519,12 @@ export async function handleMarketResolved(event: RawStellarEvent): Promise<void
   // Invalidate all Redis cache keys for this market
   await cacheDeletePattern(`market:${p.market_id}*`);
   await cacheDeletePattern(`markets:*`);
+
+  publishEvent(p.market_id as string, {
+    type: 'resolved',
+    marketId: p.market_id as string,
+    winningOutcomeId: p.outcome as string,
+  });
 }
 
 export async function handleMarketCancelled(event: RawStellarEvent): Promise<void> {

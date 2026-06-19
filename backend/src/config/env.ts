@@ -22,6 +22,7 @@ const envSchema = z.object({
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   BOXING_API_URL: z.string().url().optional(),
   SENTRY_DSN: z.string().url().optional(),
+  WS_BUFFER_THRESHOLD_BYTES: z.coerce.number().int().positive().default(16384),
 });
 
 export type Env = z.infer<typeof envSchema>;

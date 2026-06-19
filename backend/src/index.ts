@@ -15,7 +15,8 @@ import { getPortfolio, getPlatformStats } from "./api/controllers/MarketControll
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";
-import { initActivityFeed } from "./websocket/realtime";
+import { initActivityFeed, shutdownActivityFeed } from "./websocket/realtime";
+import { closeRedisClients } from "./config/redis";
 import { getRiskEngine } from "./services/RiskEngine";
 
 // Validate environment variables on startup
@@ -108,13 +109,18 @@ const server = app.listen(PORT, () => {
   getRiskEngine().start();
 });
 
-initActivityFeed(server);
+void initActivityFeed(server).catch((err) => {
+  logger.error({ err }, 'Failed to initialise ActivityFeed');
+  process.exit(1);
+});
 
-const shutdown = (): void => {
+const shutdown = async (): Promise<void> => {
   getRiskEngine().stop();
+  await shutdownActivityFeed();
+  await closeRedisClients();
   server.close(() => process.exit(0));
 };
-process.once('SIGTERM', shutdown);
-process.once('SIGINT', shutdown);
+process.once('SIGTERM', () => { void shutdown(); });
+process.once('SIGINT', () => { void shutdown(); });
 
 export default app;

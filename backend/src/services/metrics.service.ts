@@ -1,4 +1,4 @@
-import { Counter, register } from 'prom-client';
+import { Counter, Gauge, register } from 'prom-client';
 
 register.setDefaultLabels({ app: 'boxmeout' });
 
@@ -20,6 +20,21 @@ export const cronNotificationsSoftDeleted = new Counter({
 export const cronDistributionsArchived = new Counter({
   name: 'cron_distributions_archived_total',
   help: 'Total failed distributions rows archived by cleanup cron',
+});
+
+export const wsConnectedClients = new Gauge({
+  name: 'ws_connected_clients',
+  help: 'Number of currently connected WebSocket clients',
+});
+
+export const wsMessagesPublishedTotal = new Counter({
+  name: 'ws_messages_published_total',
+  help: 'Total WebSocket activity events published to Redis',
+});
+
+export const wsMessagesDroppedTotal = new Counter({
+  name: 'ws_messages_dropped_total',
+  help: 'Total WebSocket messages dropped due to client backpressure',
 });
 
 export { register };
