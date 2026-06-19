@@ -110,7 +110,7 @@ export const createMarketBody = z
 
 export const resolveMarketBody = z.object({
   winning_outcome: z.enum(['fighter_a', 'fighter_b', 'draw', 'no_contest'], {
-    errorMap: () => ({ message: 'winning_outcome must be one of: fighter_a, fighter_b, draw, no_contest' }),
+    message: 'winning_outcome must be one of: fighter_a, fighter_b, draw, no_contest',
   }),
 });
 
@@ -119,7 +119,7 @@ export const resolveMarketBody = z.object({
 export const oracleSubmitBody = z.object({
   match_id: z.string().min(1, 'match_id is required'),
   outcome: z.enum(['fighter_a', 'fighter_b', 'draw', 'no_contest'], {
-    errorMap: () => ({ message: 'outcome must be one of: fighter_a, fighter_b, draw, no_contest' }),
+    message: 'outcome must be one of: fighter_a, fighter_b, draw, no_contest',
   }),
   reported_at: z.string().datetime({ message: 'reported_at must be a valid ISO 8601 datetime string' }),
   signature: z.string().regex(/^[0-9a-fA-F]+$/, 'signature must be a hex-encoded string').min(1),
@@ -129,7 +129,7 @@ export const oracleSubmitBody = z.object({
 // --- Dispute schemas ---
 
 export const submitDisputeBody = z.object({
-  marketId: z.string().uuid(),
+  marketId: z.string().min(1, 'marketId is required'),
   reason: sanitizedString(10, 1000),
   evidenceUrl: z.string().url().optional().or(z.literal('')),
 });
@@ -144,6 +144,7 @@ export const resolveDisputeBody = z
     resolution: sanitizedString(10, 5000),
     adminNotes: sanitizedString(5, 5000).optional(),
     newWinningOutcome: z.number().int().min(0).max(1).optional(),
+    notifyEmail: z.string().email().optional(),
   })
   .refine(
     (data) => !(data.action === 'RESOLVE_NEW_OUTCOME' && data.newWinningOutcome === undefined),

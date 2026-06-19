@@ -127,11 +127,6 @@ export async function isSessionRevoked(userId: string, sessionVersion: number): 
   return val !== null;
 }
 
-export function isEmailVerified(userId: string): boolean {
-  const user = users.get(userId);
-  return !!user?.emailVerified;
-}
-
 // ---------------------------------------------------------------------------
 // Auth service
 // ---------------------------------------------------------------------------

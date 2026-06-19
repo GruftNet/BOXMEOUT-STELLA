@@ -1,5 +1,25 @@
 'use client';
 
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { getConnectedAddress, voteProposal, executeProposal } from '@/services/wallet';
+import { TxStatusToast } from '@/components/ui/TxStatusToast';
+import type { Proposal, TxStatus, VoteType } from '@/types';
+
+// Using the same mock data for consistency
+const MOCK_PROPOSALS: Record<string, Proposal> = {
+  'prop_1': {
+    id: 'prop_1', type: 'fee_rate', value: 40, description: 'Increase the fee rate to 40 bps to support the treasury.', status: 'Active', proposer: 'CBX...4A', votesFor: 50000, votesAgainst: 15000, votesAbstain: 5000, createdAt: new Date(Date.now() - 86400000 * 2).toISOString(), expiresAt: new Date(Date.now() + 86400000 * 5).toISOString(),
+  },
+  'prop_2': {
+    id: 'prop_2', type: 'add_token', value: 'CBZ...X1', description: 'Add USDC to the approved token list for market settlements.', status: 'Passed', proposer: 'CCM...9Z', votesFor: 120000, votesAgainst: 10000, votesAbstain: 0, createdAt: new Date(Date.now() - 86400000 * 10).toISOString(), expiresAt: new Date(Date.now() - 86400000 * 3).toISOString(),
+  },
+  'prop_3': {
+    id: 'prop_3', type: 'max_discount_rate', value: 600, description: 'Change the maximum discount rate to 600 bps.', status: 'Executed', proposer: 'CDM...8B', votesFor: 80000, votesAgainst: 20000, votesAbstain: 2000, createdAt: new Date(Date.now() - 86400000 * 20).toISOString(), expiresAt: new Date(Date.now() - 86400000 * 13).toISOString(),
+  },
+};
+
+export default function ProposalDetail({ params }: { params: { id: string } }) {
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
