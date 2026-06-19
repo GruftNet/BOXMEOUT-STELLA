@@ -176,11 +176,16 @@ export function getConnectedAddress(): string | null {
 export async function submitBet(
   market_contract_address: string,
   side: BetSide,
-  amount_xlm: number,
+  amount: number,
+  token: string,
+  minXlmOut: number,
 ): Promise<string> {
+  const amountInStroops = xlmToStroops(amount);
   return buildAndSubmit(market_contract_address, 'place_bet', [
     nativeToScVal(side, { type: 'symbol' }),
-    nativeToScVal(xlmToStroops(amount_xlm), { type: 'i128' }),
+    nativeToScVal(amountInStroops, { type: 'i128' }),
+    new Address(token).toScVal(),
+    nativeToScVal(minXlmOut, { type: 'i128' }),
   ]);
 }
 

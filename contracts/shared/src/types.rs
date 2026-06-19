@@ -123,12 +123,28 @@ pub struct BetRecord {
     pub market_id: u64,
     /// Which outcome the bettor backed
     pub side: BetSide,
-    /// Amount staked in stroops
+    /// Amount staked in stroops (XLM equivalent after conversion)
     pub amount: i128,
+    /// Original token used for the bet (Address::from_string("XLM") for native XLM)
+    pub original_token: Address,
+    /// Original amount in stroops before conversion to XLM
+    pub original_amount: i128,
     /// Unix timestamp when the bet was placed
     pub placed_at: u64,
     /// True once winnings or refund have been claimed
     pub claimed: bool,
+}
+
+/// Token approved for betting on the platform.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApprovedToken {
+    /// Token contract address
+    pub token: Address,
+    /// Maximum acceptable slippage in basis points (e.g., 50 = 0.5%)
+    pub max_slippage_bps: u32,
+    /// Whether this token is currently active for betting
+    pub active: bool,
 }
 
 /// Optional outcome — used in MarketState to avoid Option<EnumType> which

@@ -52,8 +52,10 @@ export const bets = pgTable(
     market_id: text('market_id').notNull().references(() => markets.market_id),
     bettor_address: text('bettor_address').notNull(),
     side: text('side').notNull(),
-    amount: numeric('amount').notNull(),
+    amount: numeric('amount').notNull(), // XLM equivalent in stroops
     amount_xlm: numeric('amount_xlm').default('0'),
+    original_token: text('original_token').default('XLM'), // Token used for betting (e.g., USDC, AQUA)
+    original_amount: numeric('original_amount').default('0'), // Original amount in token's smallest unit
     placed_at: timestamp('placed_at', { withTimezone: true }).defaultNow(),
     claimed: boolean('claimed').default(false),
     claimed_at: timestamp('claimed_at', { withTimezone: true }),
