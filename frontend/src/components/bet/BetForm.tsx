@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import type { BetSide, Market } from '../../types';
 import { usePlaceBet } from '../../hooks/usePlaceBet';
+import { useTokenRates, APPROVED_TOKENS, type TokenRate } from '../../hooks/useTokenRates';
 import { useWallet } from '../../hooks/useWallet';
 import { ConnectPrompt } from '../ui/ConnectPrompt';
 import { TxStatusToast } from '../ui/TxStatusToast';
@@ -37,6 +38,7 @@ function calcPayout(market: Market, side: BetSide, amountXlm: number): number | 
  * BetForm component for placing bets on a market.
  * Features:
  * - Three outcome buttons: Fighter A / Draw / Fighter B
+ * - Token selector with live XLM rate previews
  * - Amount input with min validation and balance check
  * - Real-time projected payout display
  * - "Connect Wallet" prompt if not connected
@@ -46,20 +48,39 @@ function calcPayout(market: Market, side: BetSide, amountXlm: number): number | 
  */
 export function BetForm({ market }: BetFormProps): JSX.Element {
   const { isConnected } = useWallet();
-  const { placeBet, txStatus, error } = usePlaceBet();
+  const { placeBet, txStatus } = usePlaceBet();
   const setTxStatus = useAppStore((s) => s.setTxStatus);
 
   const [side, setSide] = useState<BetSide | null>(null);
+  const [selectedToken, setSelectedToken] = useState<string>(APPROVED_TOKENS[0].token);
   const [amount, setAmount] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const amountNum = parseFloat(amount);
   const isAmountValid = !isNaN(amountNum) && amountNum > 0 && amountNum >= 1;
 
+  // Convert input amount to stroops for rate query
+  const amountInStroops = Math.floor(amountNum * 1e7);
+  const { data: tokenRates } = useTokenRates(amountInStroops);
+
+  // Get the XLM equivalent based on selected token
+  const xlmEquivalent = useMemo(() => {
+    if (!tokenRates || tokenRates.length === 0) return amountNum;
+    const rate = tokenRates.find(r => r.token === selectedToken);
+    if (!rate) return amountNum;
+    // For XLM, rate is 1:1, for other tokens use the fetched rate
+    return rate.token === 'XLM' ? amountNum : rate.xlm_equivalent;
+  }, [tokenRates, selectedToken, amountNum]);
+
   const projectedPayout = useMemo(() => {
     if (!side) return null;
-    return calcPayout(market, side, amountNum);
-  }, [side, amountNum, market]);
+    return calcPayout(market, side, xlmEquivalent);
+  }, [side, xlmEquivalent, market]);
+
+  // Get selected token info for slippage calculation
+  const selectedTokenInfo = useMemo(() => {
+    return APPROVED_TOKENS.find(t => t.token === selectedToken) || APPROVED_TOKENS[0];
+  }, [selectedToken]);
 
   const canSubmit = isConnected && !!side && isAmountValid && !isSubmitting && market.status === 'open';
 
@@ -67,7 +88,11 @@ export function BetForm({ market }: BetFormProps): JSX.Element {
     if (!canSubmit) return;
     setIsSubmitting(true);
     try {
-      await placeBet(market.market_id, side, amountNum);
+      // Calculate min_xlm_out based on slippage tolerance
+      const slippageFactor = (10000 - selectedTokenInfo.max_slippage_bps) / 10000;
+      const minXlmOut = Math.floor(xlmEquivalent * slippageFactor * 1e7);
+      
+      await placeBet(market.market_id, side, amountNum, selectedToken, minXlmOut);
       setSide(null);
       setAmount('');
     } catch {
@@ -110,9 +135,33 @@ export function BetForm({ market }: BetFormProps): JSX.Element {
         ))}
       </div>
 
+      {/* Token selector */}
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">Token</label>
+        <select
+          value={selectedToken}
+          onChange={(e) => setSelectedToken(e.target.value)}
+          disabled={isSubmitting}
+          className="w-full bg-gray-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50"
+        >
+          {tokenRates?.map((rate) => (
+            <option key={rate.token} value={rate.token}>
+              {rate.symbol}
+              {rate.token !== 'XLM' && rate.xlm_equivalent > 0 
+                ? ` (~${rate.xlm_equivalent.toFixed(4)} XLM)` 
+                : ''}
+            </option>
+          )) || APPROVED_TOKENS.map((token) => (
+            <option key={token.token} value={token.token}>
+              {token.symbol} {token.max_slippage_bps > 0 ? `(${token.max_slippage_bps / 100}% slippage)` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {/* Amount input */}
       <div>
-        <label className="block text-xs text-gray-400 mb-1">Amount (XLM)</label>
+        <label className="block text-xs text-gray-400 mb-1">Amount ({selectedToken === 'XLM' ? 'XLM' : 'tokens'})</label>
         <input
           type="number"
           min="1"
@@ -123,7 +172,9 @@ export function BetForm({ market }: BetFormProps): JSX.Element {
           disabled={isSubmitting}
           className="w-full bg-gray-800 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50"
         />
-        <p className="text-xs text-gray-500 mt-1">Min: 1 XLM</p>
+        <p className="text-xs text-gray-500 mt-1">
+          Min: 1 {selectedToken === 'XLM' ? 'XLM' : 'token'} ≈ {xlmEquivalent.toFixed(4)} XLM
+        </p>
       </div>
 
       {/* Payout preview */}

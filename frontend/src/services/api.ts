@@ -103,3 +103,67 @@ export async function fetchPortfolio(address: string): Promise<Portfolio> {
 export async function fetchMarketStats(market_id: string): Promise<MarketStats> {
   return apiFetch<MarketStats>(`/api/markets/${market_id}/stats`);
 }
+
+// ─── Governance ──────────────────────────────────────────────────────────────
+
+import type { Proposal } from '../types';
+
+export interface ProposalListResponse {
+  proposals: Proposal[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface ProposalFilters {
+  status?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Calls GET /api/governance/proposals with optional filters and pagination.
+ * Returns typed ProposalListResponse.
+ */
+export async function fetchProposals(
+  filters?: ProposalFilters,
+): Promise<ProposalListResponse> {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.page) params.set('page', filters.page.toString());
+  if (filters?.limit) params.set('limit', filters.limit.toString());
+  const qs = params.toString();
+  return apiFetch<ProposalListResponse>(`/api/governance/proposals${qs ? `?${qs}` : ''}`);
+}
+
+/**
+ * Calls GET /api/governance/proposals/:id.
+ * Returns a single Proposal.
+ * Throws NotFoundError on 404.
+ */
+export async function fetchProposalById(id: string): Promise<Proposal> {
+  return apiFetch<Proposal>(`/api/governance/proposals/${id}`);
+}
+
+/**
+ * Calls POST /api/governance/proposals/:id/vote.
+ * Submits a vote on behalf of a Stellar address.
+ */
+export async function submitVote(
+  proposalId: string,
+  voter: string,
+  vote: 'for' | 'against' | 'abstain',
+): Promise<Proposal> {
+  const res = await fetch(`${API_BASE}/api/governance/proposals/${proposalId}/vote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voter, vote }),
+  });
+  if (res.status === 409) throw new AlreadyVotedError('Already voted on this proposal');
+  if (!res.ok) throw new NetworkError(`Unexpected response: ${res.status}`);
+  return res.json() as Promise<Proposal>;
+}
+
+export class AlreadyVotedError extends Error {
+  constructor(message = 'Already voted') { super(message); this.name = 'AlreadyVotedError'; }
+}

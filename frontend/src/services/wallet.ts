@@ -6,7 +6,7 @@
 import {
   Contract,
   Networks,
-  SorobanRpc,
+  rpc,
   TransactionBuilder,
   BASE_FEE,
   nativeToScVal,
@@ -67,7 +67,7 @@ async function buildAndSubmit(
   const address = getConnectedAddress();
   if (!address) throw new Error('WalletNotConnected');
 
-  const server = new SorobanRpc.Server(SOROBAN_RPC_URL);
+  const server = new rpc.Server(SOROBAN_RPC_URL);
   const account = await server.getAccount(address);
   const contract = new Contract(contractAddress);
 
@@ -176,11 +176,16 @@ export function getConnectedAddress(): string | null {
 export async function submitBet(
   market_contract_address: string,
   side: BetSide,
-  amount_xlm: number,
+  amount: number,
+  token: string,
+  minXlmOut: number,
 ): Promise<string> {
+  const amountInStroops = xlmToStroops(amount);
   return buildAndSubmit(market_contract_address, 'place_bet', [
     nativeToScVal(side, { type: 'symbol' }),
-    nativeToScVal(xlmToStroops(amount_xlm), { type: 'i128' }),
+    nativeToScVal(amountInStroops, { type: 'i128' }),
+    new Address(token).toScVal(),
+    nativeToScVal(minXlmOut, { type: 'i128' }),
   ]);
 }
 
@@ -209,7 +214,7 @@ export async function submitClaimWithStages(
   const token = process.env.NEXT_PUBLIC_XLM_TOKEN_ADDRESS;
   if (!token) throw new Error('NEXT_PUBLIC_XLM_TOKEN_ADDRESS not set');
 
-  const server = new SorobanRpc.Server(SOROBAN_RPC_URL);
+  const server = new rpc.Server(SOROBAN_RPC_URL);
   const account = await server.getAccount(address);
   const contract = new Contract(market_contract_address);
 
@@ -399,9 +404,13 @@ export async function getWalletBalance(): Promise<number> {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function xlmToStroops(xlm: number): bigint {
-  const [whole, frac = ''] = xlm.toString().split('.');
-  const fracPadded = frac.slice(0, 7).padEnd(7, '0');
-  return BigInt(whole) * 10_000_000n + BigInt(fracPadded);
+  let str = xlm.toString();
+  if (str.includes('e')) {
+    str = xlm.toFixed(10);
+  }
+  const [whole, frac = ''] = str.split('.');
+  const fracPadded = (frac + '0000000').slice(0, 7);
+  return BigInt(whole) * 10_000_000n + BigInt(fracPadded.replace(/^0+/, '') || '0');
 }
 
 export function stroopsToXlm(stroops: bigint | string): number {
