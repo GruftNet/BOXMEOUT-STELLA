@@ -129,7 +129,7 @@ export const oracleSubmitBody = z.object({
 // --- Dispute schemas ---
 
 export const submitDisputeBody = z.object({
-  marketId: z.string().uuid(),
+  marketId: z.string().min(1, 'marketId is required'),
   reason: sanitizedString(10, 1000),
   evidenceUrl: z.string().url().optional().or(z.literal('')),
 });
@@ -144,6 +144,7 @@ export const resolveDisputeBody = z
     resolution: sanitizedString(10, 5000),
     adminNotes: sanitizedString(5, 5000).optional(),
     newWinningOutcome: z.number().int().min(0).max(1).optional(),
+    notifyEmail: z.string().email().optional(),
   })
   .refine(
     (data) => !(data.action === 'RESOLVE_NEW_OUTCOME' && data.newWinningOutcome === undefined),

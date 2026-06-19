@@ -11,6 +11,7 @@ import { logger } from "./utils/logger";
 import authRouter from "./routes/auth.routes";
 import marketRouter from "./routes/market.routes";
 import adminRouter from "./routes/admin.routes";
+import disputesRouter from "./routes/disputes.routes";
 import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
@@ -55,6 +56,7 @@ app.use(
 
 app.use("/auth", authRouter);
 app.use("/api/markets", marketRouter);
+app.use("/api/disputes", disputesRouter);
 app.use("/api/claims", claimsRouter);
 app.get("/api/stats", getPlatformStats);
 app.get("/api/portfolio/:address", getPortfolio);

@@ -133,6 +133,19 @@ export async function sendPasswordResetEmail(
   await sendEmail(toEmail, 'reset_password', { resetUrl });
 }
 
+export async function sendDisputeResolved(
+  toEmail: string,
+  disputeId: string,
+  marketId: string,
+  resolution: string,
+): Promise<void> {
+  await sendEmail(toEmail, 'dispute_resolved', {
+    disputeId,
+    marketTitle: `Market ${marketId}`,
+    resolution,
+  });
+}
+
 export async function sendExportReadyEmail(
   toEmail: string,
   exportType: string,
