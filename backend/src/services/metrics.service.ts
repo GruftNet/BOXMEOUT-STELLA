@@ -37,4 +37,19 @@ export const wsMessagesDroppedTotal = new Counter({
   help: 'Total WebSocket messages dropped due to client backpressure',
 });
 
+export const indexerIsLeader = new Gauge({
+  name: 'indexer_is_leader',
+  help: '1 when this instance holds the indexer leader lease, 0 otherwise',
+});
+
+export const indexerLedgerLag = new Gauge({
+  name: 'indexer_ledger_lag',
+  help: 'Gap between the latest on-chain ledger and the last ledger processed by this instance',
+});
+
+export const indexerEventsProcessedTotal = new Counter({
+  name: 'indexer_events_processed_total',
+  help: 'Total Stellar contract events successfully processed by the indexer',
+});
+
 export { register };

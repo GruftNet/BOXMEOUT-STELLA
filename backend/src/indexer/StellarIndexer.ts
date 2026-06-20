@@ -5,17 +5,27 @@
 // by MarketFactory, Market, and Treasury contracts.
 // Persists all relevant state changes to the PostgreSQL DB.
 //
-// Contributors: implement every function marked TODO.
-// DO NOT change function signatures.
+// Supports horizontal scaling via Redis leader election:
+// only the elected leader streams ledgers; standbys take over
+// within one TTL window on leader failure.
 // ============================================================
 
+import os from 'os';
 import { pool } from '../config/db';
+import { redis } from '../config/redis';
 import { rpc, Address, xdr } from '@stellar/stellar-sdk';
 import * as Sentry from '@sentry/node';
 import { subscribeToContractEvents, fetchHistoricalEvents } from '../services/StellarService';
 import { cacheDeletePattern } from '../services/cache.service';
 import { publishEvent } from '../websocket/realtime';
 import { logger } from '../utils/logger';
+import { LeaderElection } from './LeaderElection';
+import {
+  indexerIsLeader,
+  indexerLedgerLag,
+  indexerEventsProcessedTotal,
+} from '../services/metrics.service';
+
 
 // Raw event shape returned by Stellar RPC / Horizon
 export interface RawStellarEvent {
@@ -53,19 +63,27 @@ function getMaxReplayLedgers(): number {
 
 const server = new rpc.Server(RPC_URL);
 
-export async function startIndexer(): Promise<void> {
-  const pollInterval = Number(process.env.POLL_INTERVAL_MS ?? 5000);
-  let lastProcessed = await getLastProcessedLedger();
+// ---------------------------------------------------------------------------
+// StellarIndexerService — start/stop lifecycle for the active-leader instance
+// ---------------------------------------------------------------------------
 
-  console.log(`[Indexer] Starting from ledger ${lastProcessed}`);
+class StellarIndexerService {
+  private pollTimer?: ReturnType<typeof setInterval>;
+  private unsubscribeFn?: () => void;
+  private lastProcessed = 0;
+  private processing = false;
+  private readonly pollIntervalMs: number;
 
-  // Load checkpoint and backfill if needed
-  const checkpoint = await loadCheckpoint();
-  if (checkpoint && checkpoint > lastProcessed) {
-    console.log(`[Indexer] Backfilling from ledger ${lastProcessed + 1} to ${checkpoint}`);
-    await backfillFromLedger(lastProcessed + 1, checkpoint);
-    lastProcessed = checkpoint;
+  constructor(private readonly election: LeaderElection) {
+    this.pollIntervalMs = Number(process.env.POLL_INTERVAL_MS ?? 5000);
   }
+
+  async start(): Promise<void> {
+    // Prefer the shared Redis cursor so a newly elected leader picks up
+    // exactly where the previous one left off without a DB round-trip.
+    const redisLedger = await this.election.getLastLedger();
+    const dbLedger = await getLastProcessedLedger();
+    this.lastProcessed = redisLedger ?? dbLedger;
 
   // Detect any gap accumulated since the last shutdown and replay it. Runs in
   // the background so it never blocks the live subscription started below.
@@ -100,15 +118,26 @@ export async function startIndexer(): Promise<void> {
     process.exit(0);
   });
 
-  process.on('SIGINT', () => {
-    console.log('[Indexer] SIGINT received, shutting down gracefully');
-    unsubscribe();
-    process.exit(0);
-  });
+    logger.info({
+      event: 'indexer_start',
+      instance_id: this.election.instanceId,
+      from_ledger: this.lastProcessed,
+    });
 
-  // Keep polling for new ledgers as fallback
-  while (true) {
+    // Gap-recovery: replay any ledgers the previous leader may have missed.
     try {
+      const resp = await server.getLatestLedger();
+      const latest = resp.sequence;
+      if (latest > this.lastProcessed) {
+        logger.info({ event: 'indexer_backfill', from: this.lastProcessed + 1, to: latest });
+        await backfillLedgerRange(this.lastProcessed + 1, latest, 100);
+        this.lastProcessed = latest;
+        await this.election.setLastLedger(latest);
+        await saveCheckpoint(latest);
+      }
+    } catch (err) {
+      logger.error({ err }, '[Indexer] Backfill error on start');
+    }
       // Re-sync with the checkpoint table in case the background gap replay
       // advanced it past this loop's local `lastProcessed` value.
       lastProcessed = Math.max(lastProcessed, await getLastProcessedLedger());
@@ -116,20 +145,120 @@ export async function startIndexer(): Promise<void> {
       const latestLedgerResponse = await server.getLatestLedger();
       const latestLedger = latestLedgerResponse.sequence;
 
-      if (latestLedger > lastProcessed) {
-        for (let seq = lastProcessed + 1; seq <= latestLedger; seq++) {
+    // Real-time subscription (best-effort; polling is the authoritative path).
+    this.unsubscribeFn = subscribeToContractEvents(FACTORY_CONTRACT, async (event: unknown) => {
+      try {
+        const eventData = event as Record<string, unknown>;
+        const rawEvent: RawStellarEvent = {
+          contract_address: (eventData.contract_address as string) || FACTORY_CONTRACT,
+          event_type: (eventData.type as string) || 'unknown',
+          topics: (eventData.topics as string[]) || [],
+          data: JSON.stringify(event),
+          ledger_sequence: (eventData.ledger as number) || 0,
+          ledger_close_time: (eventData.ledger_close_time as string) || new Date().toISOString(),
+          tx_hash: (eventData.tx_hash as string) || '',
+        };
+        await processEvent(rawEvent);
+        indexerEventsProcessedTotal.inc();
+      } catch (err) {
+        logger.error({ err }, '[Indexer] Real-time event error');
+      }
+    });
+
+    // Authoritative poll loop — uses setInterval to avoid blocking the event loop.
+    this.pollTimer = setInterval(async () => {
+      if (this.processing) return;
+      this.processing = true;
+      try {
+        const resp = await server.getLatestLedger();
+        const latest = resp.sequence;
+        indexerLedgerLag.set(Math.max(0, latest - this.lastProcessed));
+
+        for (let seq = this.lastProcessed + 1; seq <= latest; seq++) {
           await processLedger(seq);
           await saveCheckpoint(seq);
-          lastProcessed = seq;
+          await this.election.setLastLedger(seq);
+          this.lastProcessed = seq;
+          indexerEventsProcessedTotal.inc();
         }
-      } else {
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      } catch (err) {
+        logger.error({ err }, '[Indexer] Poll error');
+      } finally {
+        this.processing = false;
       }
-    } catch (err) {
-      console.error('[Indexer] Unrecoverable error:', err);
-      process.exit(1);
-    }
+    }, this.pollIntervalMs);
+
+    indexerIsLeader.set(1);
   }
+
+  async stop(): Promise<void> {
+    logger.info({ event: 'indexer_stop', instance_id: this.election.instanceId });
+
+    if (this.pollTimer !== undefined) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
+    if (this.unsubscribeFn) {
+      this.unsubscribeFn();
+      this.unsubscribeFn = undefined;
+    }
+    indexerIsLeader.set(0);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// startIndexer — entry point with distributed leader election
+// ---------------------------------------------------------------------------
+
+export async function startIndexer(): Promise<void> {
+  const leaseTtl = Number(process.env.INDEXER_LEASE_TTL_SECS ?? 10);
+  const leaseRefresh = Number(process.env.INDEXER_LEASE_REFRESH_SECS ?? 5);
+  // Default instance ID to hostname so containers get stable identities automatically.
+  const instanceId = process.env.INDEXER_INSTANCE_ID || os.hostname();
+
+  if (leaseRefresh >= leaseTtl / 2) {
+    throw new Error(
+      `INDEXER_LEASE_REFRESH_SECS (${leaseRefresh}) must be strictly less than ` +
+      `INDEXER_LEASE_TTL_SECS / 2 (${leaseTtl / 2}) to prevent accidental expiry`,
+    );
+  }
+
+  const election = new LeaderElection(redis, instanceId, leaseTtl, leaseRefresh);
+  const indexer = new StellarIndexerService(election);
+  let isLeader = false;
+
+  const tryAcquire = async (): Promise<void> => {
+    if (isLeader) return;
+    try {
+      const acquired = await election.acquireLease();
+      if (!acquired) return;
+
+      isLeader = true;
+      await indexer.start();
+
+      election.startRenewal(async () => {
+        isLeader = false;
+        await indexer.stop();
+      });
+    } catch (err) {
+      logger.error({ err }, '[Indexer] Election error');
+    }
+  };
+
+  // Attempt immediately, then poll every leaseRefresh seconds.
+  await tryAcquire();
+  setInterval(() => { void tryAcquire(); }, leaseRefresh * 1000);
+
+  const shutdown = async (): Promise<void> => {
+    election.stopRenewal();
+    if (isLeader) {
+      await indexer.stop();
+      await election.releaseLease();
+    }
+  };
+
+  process.once('SIGTERM', () => { void shutdown().then(() => process.exit(0)); });
+  process.once('SIGINT',  () => { void shutdown().then(() => process.exit(0)); });
 }
 
 // ---------------------------------------------------------------------------
