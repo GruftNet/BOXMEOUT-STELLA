@@ -5,6 +5,10 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 process.env.JWT_SECRET = 'test-jwt-secret-for-dispute-tests';
+// requireAdminJwt falls back to JWT_SECRET only when ADMIN_JWT_SECRET is
+// unset — pin it explicitly so this suite doesn't depend on env state left
+// behind by other test files sharing this Jest worker.
+process.env.ADMIN_JWT_SECRET = 'test-jwt-secret-for-dispute-tests';
 
 jest.mock('../../src/services/DisputeService');
 
@@ -157,12 +161,12 @@ describe('GET /api/disputes', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 403 with invalid token', async () => {
+  it('returns 401 with invalid token', async () => {
     const res = await request(app)
       .get('/api/disputes')
       .set('Authorization', 'Bearer invalid-token');
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
   });
 
   it('returns 400 for invalid status filter', async () => {

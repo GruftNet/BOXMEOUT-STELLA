@@ -53,7 +53,7 @@ describe("errorMiddleware", () => {
 
     it("should include details when provided in AppError", () => {
       const details = { field: "email", reason: "already exists" };
-      const error = new AppError(400, "Validation error", details);
+      const error = new AppError(400, "Validation error", undefined, details);
 
       errorMiddleware(error, mockReq as Request, mockRes as Response, mockNext);
 
@@ -101,7 +101,7 @@ describe("errorMiddleware", () => {
 
     it("should log 5xx AppErrors with details", () => {
       const details = { reason: "database connection failed" };
-      const error = new AppError(503, "Service unavailable", details);
+      const error = new AppError(503, "Service unavailable", undefined, details);
 
       errorMiddleware(error, mockReq as Request, mockRes as Response, mockNext);
 

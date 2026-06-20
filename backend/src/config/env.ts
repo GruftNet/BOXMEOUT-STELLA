@@ -23,6 +23,8 @@ const envSchema = z.object({
   INDEXER_INSTANCE_ID: z.string().default(''),
   INDEXER_LEASE_TTL_SECS: z.coerce.number().int().positive().default(10),
   INDEXER_LEASE_REFRESH_SECS: z.coerce.number().int().positive().default(5),
+  INDEXER_REPLAY_BATCH_SIZE: z.coerce.number().int().positive().default(50),
+  INDEXER_MAX_REPLAY_LEDGERS: z.coerce.number().int().positive().default(10000),
   BOXING_API_URL: z.string().url().optional(),
   SENTRY_DSN: z.string().url().optional(),
   WS_BUFFER_THRESHOLD_BYTES: z.coerce.number().int().positive().default(16384),

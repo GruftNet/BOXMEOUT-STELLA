@@ -85,9 +85,12 @@ describe('MarketService', () => {
   });
 
   // 4 ─────────────────────────────────────────────────────────────────────────
-  it('getMarketOdds() returns (0,0,0) for empty pools', async () => {
+  it('getMarketOdds() returns the LMSR uniform prior for empty pools', async () => {
+    // lmsrPriceBps falls back to a uniform {3333, 3333, 3334} prior when all
+    // pools are zero, rather than (0,0,0) — there's no information yet to
+    // imply any outcome is more likely than another.
     const odds = await getMarketOdds('mkt-1'); // pool totals are all '0'
-    expect(odds).toEqual({ odds_a: 0, odds_b: 0, odds_draw: 0 });
+    expect(odds).toEqual({ odds_a: 3333, odds_b: 3333, odds_draw: 3334 });
   });
 
   // 5 ─────────────────────────────────────────────────────────────────────────
@@ -108,8 +111,11 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
 
+    // LMSR implied probability, not the raw pool ratio — with the default
+    // liquidity parameter b (10_000_000_000), pool sizes in the thousands are
+    // negligible relative to b, so price stays close to the uniform prior.
     const odds = await getMarketOdds('mkt-3');
-    expect(odds).toEqual({ odds_a: 6000, odds_b: 3000, odds_draw: 1000 });
+    expect(odds).toEqual({ odds_a: 3333, odds_b: 3333, odds_draw: 3334 });
   });
 
   // 6 ─────────────────────────────────────────────────────────────────────────
@@ -229,11 +235,11 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
 
-    // Bet 1000 stroops on fighter_a
-    // payout = (1000 * (10000 - 200)) / 5000 = (1000 * 9800) / 5000 = 1960
+    // Bet 1000 stroops on fighter_a — payout is derived from the LMSR cost
+    // function (lmsrMarginalCost), not the simple pari-mutuel split.
     const result = await simulateProjectedPayout('mkt-sim', '1000', 'fighter_a');
-    expect(result.amount).toBe('1960');
-    expect(result.formatted_xlm).toBe(0.000196);
+    expect(result.amount).toBe('632');
+    expect(result.formatted_xlm).toBe(0.0000632);
   });
 
   // 14 ────────────────────────────────────────────────────────────────────────
@@ -256,15 +262,14 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
 
-    // Bet 1500 stroops on fighter_b
-    // payout = (1500 * (10000 - 200)) / 3000 = (1500 * 9800) / 3000 = 4900
+    // Bet 1500 stroops on fighter_b — LMSR cost function, see fighter_a case above.
     const result = await simulateProjectedPayout('mkt-sim', '1500', 'fighter_b');
-    expect(result.amount).toBe('4900');
-    expect(result.formatted_xlm).toBe(0.00049);
+    expect(result.amount).toBe('1470');
+    expect(result.formatted_xlm).toBe(0.000147);
   });
 
   // 15 ────────────────────────────────────────────────────────────────────────
-  it('simulateProjectedPayout() returns 0 for empty outcome pool', async () => {
+  it('simulateProjectedPayout() prices a bet into an outcome with zero current pool via LMSR', async () => {
     setDbAdapter({
       findMarkets: jest.fn(),
       findMarketById: jest.fn().mockResolvedValue(
@@ -283,9 +288,11 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
 
+    // Under LMSR, an outcome with zero current pool still has a well-defined
+    // bonding-curve cost (unlike the pari-mutuel model, where it would be 0).
     const result = await simulateProjectedPayout('mkt-empty', '1000', 'draw');
-    expect(result.amount).toBe('0');
-    expect(result.formatted_xlm).toBe(0);
+    expect(result.amount).toBe('5227');
+    expect(result.formatted_xlm).toBe(0.0005227);
   });
 
   // 16 ────────────────────────────────────────────────────────────────────────
@@ -368,11 +375,10 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
 
-    // Bet 500 stroops on draw
-    // payout = (500 * (10000 - 100)) / 1000 = (500 * 9900) / 1000 = 4950
+    // Bet 500 stroops on draw — LMSR cost function, see fighter_a case above.
     const result = await simulateProjectedPayout('mkt-draw', '500', 'draw');
-    expect(result.amount).toBe('4950');
-    expect(result.formatted_xlm).toBe(0.000495);
+    expect(result.amount).toBe('1440');
+    expect(result.formatted_xlm).toBe(0.000144);
   });
 
   // 20 ────────────────────────────────────────────────────────────────────────
