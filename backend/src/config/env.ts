@@ -20,6 +20,8 @@ const envSchema = z.object({
   ENABLE_SWAGGER: z.coerce.boolean().default(false),
   GENESIS_LEDGER: z.coerce.number().int().positive().default(100000),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+  INDEXER_REPLAY_BATCH_SIZE: z.coerce.number().int().positive().default(50),
+  INDEXER_MAX_REPLAY_LEDGERS: z.coerce.number().int().positive().default(10000),
   BOXING_API_URL: z.string().url().optional(),
   SENTRY_DSN: z.string().url().optional(),
   WS_BUFFER_THRESHOLD_BYTES: z.coerce.number().int().positive().default(16384),

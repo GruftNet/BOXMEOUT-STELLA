@@ -11,9 +11,11 @@
 
 import { pool } from '../config/db';
 import { rpc, Address, xdr } from '@stellar/stellar-sdk';
+import * as Sentry from '@sentry/node';
 import { subscribeToContractEvents, fetchHistoricalEvents } from '../services/StellarService';
 import { cacheDeletePattern } from '../services/cache.service';
 import { publishEvent } from '../websocket/realtime';
+import { logger } from '../utils/logger';
 
 // Raw event shape returned by Stellar RPC / Horizon
 export interface RawStellarEvent {
@@ -26,9 +28,28 @@ export interface RawStellarEvent {
   tx_hash: string;
 }
 
+// Structured summary returned by gap-replay operations.
+export interface ReplayResult {
+  gap_size: number;
+  replayed_events: number;
+  skipped_duplicates: number;
+  duration_ms: number;
+}
+
 const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 const FACTORY_CONTRACT = process.env.FACTORY_CONTRACT_ADDRESS || '';
 const TREASURY_CONTRACT = process.env.TREASURY_CONTRACT_ADDRESS || '';
+
+// No more than 1 replay batch per second, to avoid throttling by Horizon/RPC.
+const REPLAY_BATCH_INTERVAL_MS = 1000;
+
+function getReplayBatchSize(): number {
+  return Number(process.env.INDEXER_REPLAY_BATCH_SIZE ?? 50);
+}
+
+function getMaxReplayLedgers(): number {
+  return Number(process.env.INDEXER_MAX_REPLAY_LEDGERS ?? 10000);
+}
 
 const server = new rpc.Server(RPC_URL);
 
@@ -45,6 +66,12 @@ export async function startIndexer(): Promise<void> {
     await backfillFromLedger(lastProcessed + 1, checkpoint);
     lastProcessed = checkpoint;
   }
+
+  // Detect any gap accumulated since the last shutdown and replay it. Runs in
+  // the background so it never blocks the live subscription started below.
+  void detectAndReplayGap().catch(err => {
+    logger.error({ err }, '[Indexer] Gap replay failed');
+  });
 
   // Subscribe to real-time events
   console.log(`[Indexer] Starting real-time subscription from ledger ${lastProcessed}`);
@@ -82,6 +109,10 @@ export async function startIndexer(): Promise<void> {
   // Keep polling for new ledgers as fallback
   while (true) {
     try {
+      // Re-sync with the checkpoint table in case the background gap replay
+      // advanced it past this loop's local `lastProcessed` value.
+      lastProcessed = Math.max(lastProcessed, await getLastProcessedLedger());
+
       const latestLedgerResponse = await server.getLatestLedger();
       const latestLedger = latestLedgerResponse.sequence;
 
@@ -249,46 +280,79 @@ function buildEventPayload(
 // Ledger processing
 // ---------------------------------------------------------------------------
 
+/**
+ * Fetches and decodes the contract events emitted in a single ledger.
+ * Shared by the live/backfill path (processLedger) and gap replay
+ * (replayLedgerRange), which differ only in how they persist the result.
+ */
+async function fetchLedgerEvents(ledger_sequence: number): Promise<RawStellarEvent[]> {
+  const request: rpc.Api.GetEventsRequest = {
+    startLedger: ledger_sequence,
+    filters: [
+      {
+        type: 'contract',
+        contractIds: [FACTORY_CONTRACT, TREASURY_CONTRACT],
+        topics: [['*']]
+      }
+    ],
+    limit: 100
+  };
+
+  const response = await server.getEvents(request);
+
+  if (!response.events || response.events.length === 0) {
+    return [];
+  }
+
+  return response.events.map((event): RawStellarEvent => {
+    const contractId = typeof event.contractId === 'string' ? event.contractId : event.contractId?.toString() || '';
+
+    // Properly extract event type from ScVal Symbol topic
+    const eventType = (event.topic[0] as any)?.sym()?.toString() || 'unknown';
+
+    // Build a flat JSON record from ScVal topics + value
+    const payload = buildEventPayload(eventType, event.topic, event.value);
+
+    return {
+      contract_address: contractId,
+      event_type: eventType,
+      topics: event.topic.map((t: any) => scvToString(t)),
+      data: JSON.stringify(payload),
+      ledger_sequence: event.ledger,
+      ledger_close_time: event.ledgerClosedAt,
+      tx_hash: event.txHash
+    };
+  });
+}
+
+/**
+ * Inserts a raw event into blockchain_events, skipping it if the tx_hash
+ * already exists. Returns true if a new row was inserted (i.e. this event
+ * has not been processed before), false if it was a duplicate.
+ */
+async function insertEventIfNew(event: RawStellarEvent): Promise<boolean> {
+  const result = await pool.query(
+    `INSERT INTO blockchain_events
+       (contract_address, event_type, payload, ledger_sequence, ledger_close_time, tx_hash)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (tx_hash) DO NOTHING`,
+    [
+      event.contract_address,
+      event.event_type,
+      event.data,
+      event.ledger_sequence,
+      event.ledger_close_time,
+      event.tx_hash
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function processLedger(ledger_sequence: number): Promise<void> {
   try {
-    const request: rpc.Api.GetEventsRequest = {
-      startLedger: ledger_sequence,
-      filters: [
-        {
-          type: 'contract',
-          contractIds: [FACTORY_CONTRACT, TREASURY_CONTRACT],
-          topics: [['*']]
-        }
-      ],
-      limit: 100
-    };
+    const events = await fetchLedgerEvents(ledger_sequence);
 
-    const response = await server.getEvents(request);
-
-    if (!response.events || response.events.length === 0) {
-      return;
-    }
-
-    for (const event of response.events) {
-      const contractId = typeof event.contractId === 'string' ? event.contractId : event.contractId?.toString() || '';
-
-      // Properly extract event type from ScVal Symbol topic
-      const eventType = (event.topic[0] as any)?.sym()?.toString() || 'unknown';
-
-      // Build a flat JSON record from ScVal topics + value
-      const payload = buildEventPayload(eventType, event.topic, event.value);
-      const data = JSON.stringify(payload);
-
-      const rawEvent: RawStellarEvent = {
-        contract_address: contractId,
-        event_type: eventType,
-        topics: event.topic.map((t: any) => scvToString(t)),
-        data,
-        ledger_sequence: event.ledger,
-        ledger_close_time: event.ledgerClosedAt,
-        tx_hash: event.txHash
-      };
-
+    for (const rawEvent of events) {
       // Persist raw event to blockchain_events table — use DO UPDATE so
       // re-indexing during a backfill refreshes stale rows instead of skipping.
       await pool.query(
@@ -316,6 +380,134 @@ export async function processLedger(ledger_sequence: number): Promise<void> {
   } catch (err) {
     console.error(`Error processing ledger ${ledger_sequence}:`, err);
   }
+}
+
+/**
+ * Replays all missed ledgers in [from_ledger, to_ledger] inclusive.
+ *
+ * - Fetches each batch of ledgers concurrently via Promise.allSettled so a
+ *   single failed fetch doesn't abort the rest of the batch.
+ * - Persists each event idempotently (ON CONFLICT (tx_hash) DO NOTHING) and
+ *   only routes genuinely-new events through the existing event handlers.
+ * - Advances the checkpoint only after a full batch has committed — never
+ *   mid-batch — so a crash mid-replay re-does at most one batch.
+ * - Rate-limited to one batch per second to avoid Horizon/RPC throttling.
+ * - Invalidates the Redis cache for every market touched by a replayed event.
+ */
+export async function replayLedgerRange(from_ledger: number, to_ledger: number): Promise<ReplayResult> {
+  const startTime = Date.now();
+  const batchSize = getReplayBatchSize();
+
+  let replayedEvents = 0;
+  let skippedDuplicates = 0;
+  const affectedMarketIds = new Set<string>();
+
+  for (let batchStart = from_ledger; batchStart <= to_ledger; batchStart += batchSize) {
+    const batchEnd = Math.min(batchStart + batchSize - 1, to_ledger);
+    const batchStartedAt = Date.now();
+
+    const sequences: number[] = [];
+    for (let seq = batchStart; seq <= batchEnd; seq++) sequences.push(seq);
+
+    const settled = await Promise.allSettled(sequences.map(seq => fetchLedgerEvents(seq)));
+
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i];
+      if (outcome.status === 'rejected') {
+        logger.error(
+          { ledger_sequence: sequences[i], err: outcome.reason },
+          '[Indexer] Replay: failed to fetch ledger events',
+        );
+        continue;
+      }
+
+      for (const rawEvent of outcome.value) {
+        const isNew = await insertEventIfNew(rawEvent);
+        if (!isNew) {
+          skippedDuplicates++;
+          continue;
+        }
+
+        replayedEvents++;
+        await processEvent(rawEvent);
+
+        const marketId = parsePayload(rawEvent.data).market_id;
+        if (typeof marketId === 'string' && marketId) {
+          affectedMarketIds.add(marketId);
+        }
+      }
+    }
+
+    // Checkpoint only advances once the full batch has committed.
+    await saveCheckpoint(batchEnd);
+
+    // Rate limit: no more than one batch per second.
+    const elapsed = Date.now() - batchStartedAt;
+    if (batchEnd < to_ledger && elapsed < REPLAY_BATCH_INTERVAL_MS) {
+      await new Promise(resolve => setTimeout(resolve, REPLAY_BATCH_INTERVAL_MS - elapsed));
+    }
+  }
+
+  for (const marketId of affectedMarketIds) {
+    await cacheDeletePattern(`market:${marketId}*`);
+  }
+  if (affectedMarketIds.size > 0) {
+    await cacheDeletePattern('markets:*');
+  }
+
+  const result: ReplayResult = {
+    gap_size: to_ledger - from_ledger + 1,
+    replayed_events: replayedEvents,
+    skipped_duplicates: skippedDuplicates,
+    duration_ms: Date.now() - startTime,
+  };
+
+  logger.info(result, '[Indexer] Replay summary');
+  return result;
+}
+
+/**
+ * Compares the indexer's checkpoint against the current Horizon/RPC ledger
+ * sequence and replays any missed ledgers (e.g. after a restart or downtime).
+ *
+ * If the gap exceeds INDEXER_MAX_REPLAY_LEDGERS, replay is skipped entirely,
+ * a Sentry warning is raised, and the checkpoint jumps straight to the
+ * current ledger so the live subscription isn't stuck waiting on history.
+ */
+export async function detectAndReplayGap(): Promise<ReplayResult> {
+  const lastProcessed = await getLastProcessedLedger();
+  const latestLedgerResponse = await server.getLatestLedger();
+  const currentLedger = latestLedgerResponse.sequence;
+  const gapSize = currentLedger - lastProcessed;
+
+  if (gapSize <= 0) {
+    return { gap_size: 0, replayed_events: 0, skipped_duplicates: 0, duration_ms: 0 };
+  }
+
+  const maxReplayLedgers = getMaxReplayLedgers();
+  if (gapSize > maxReplayLedgers) {
+    Sentry.captureMessage(
+      `[Indexer] Gap of ${gapSize} ledgers exceeds INDEXER_MAX_REPLAY_LEDGERS ` +
+      `(${maxReplayLedgers}); skipping replay and jumping to ledger ${currentLedger}`,
+      { level: 'warning' },
+    );
+    await saveCheckpoint(currentLedger);
+
+    const result: ReplayResult = {
+      gap_size: gapSize,
+      replayed_events: 0,
+      skipped_duplicates: 0,
+      duration_ms: 0,
+    };
+    logger.info(result, '[Indexer] Replay summary (gap exceeded max, skipped)');
+    return result;
+  }
+
+  logger.info(
+    { from: lastProcessed + 1, to: currentLedger, gap_size: gapSize },
+    '[Indexer] Detected gap on startup, replaying missed ledgers',
+  );
+  return replayLedgerRange(lastProcessed + 1, currentLedger);
 }
 
 export async function processEvent(event: RawStellarEvent): Promise<void> {
