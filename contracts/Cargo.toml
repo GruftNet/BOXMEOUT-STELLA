@@ -4,6 +4,7 @@ members = [
     "treasury",
     "market_factory",
     "market",
+    "governance",
 ]
 resolver = "2"
 
