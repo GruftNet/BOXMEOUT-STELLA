@@ -8,6 +8,9 @@
     "start": "next start -p 3000",
     "test": "jest",
     "lint": "next lint",
+    "format": "prettier --write 'src/**/*.{ts,tsx}'",
+    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
     "format": "prettier --write 'src/**/*.{ts,tsx}'"
   },
   "dependencies": {
@@ -24,6 +27,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^14.3.1",
     "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

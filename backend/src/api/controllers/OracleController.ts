@@ -14,7 +14,7 @@ const ORACLE_OUTCOMES = ['fighter_a', 'fighter_b', 'draw', 'no_contest'] as cons
 const submitOracleResultSchema = z.object({
   match_id: z.string().min(1, 'match_id is required'),
   outcome: z.enum(ORACLE_OUTCOMES, {
-    errorMap: () => ({ message: 'outcome must be one of: fighter_a, fighter_b, draw, no_contest' }),
+    message: 'outcome must be one of: fighter_a, fighter_b, draw, no_contest',
   }),
   reported_at: z
     .string()

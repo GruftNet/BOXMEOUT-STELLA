@@ -649,6 +649,109 @@ export async function simulateProjectedPayout(
  * Queries: COUNT(*) WHERE status='Open', SUM(total_pool), COUNT(bets)
  * Results cached in Redis for 60 seconds.
  */
+export interface LeaderboardEntry {
+  rank: number;
+  bettor_address: string;
+  total_staked_xlm: number;
+  total_won_xlm: number;
+  bet_count: number;
+  win_rate: number;
+}
+
+/**
+ * Returns ranked leaderboard entries aggregated from the bets table.
+ * @param metric - Sort criterion: 'won' (total_won_xlm DESC), 'bets' (bet_count DESC), 'winrate' (win_rate DESC, min 10 bets)
+ * @param limit  - Max rows (default 50)
+ * Results cached in Redis for 60 seconds.
+ */
+export async function getLeaderboard(
+  metric: 'won' | 'bets' | 'winrate',
+  limit: number = 50,
+): Promise<LeaderboardEntry[]> {
+  const cacheKey = `leaderboard:${metric}:${limit}`;
+  const cached = await cache.get<LeaderboardEntry[]>(cacheKey);
+  if (cached) return cached;
+
+  let rows: LeaderboardEntry[];
+  if (_db) {
+    const allMarkets = await db().findMarkets();
+    const allBets = (
+      await Promise.all(allMarkets.map((m) => db().findBetsByMarket(m.market_id)))
+    ).flat();
+
+    const map = new Map<string, { staked: number; won: number; count: number; wins: number }>();
+    for (const bet of allBets) {
+      const addr = bet.bettor_address;
+      const entry = map.get(addr) ?? { staked: 0, won: 0, count: 0, wins: 0 };
+      entry.staked += Number(bet.amount) / 10_000_000;
+      if (bet.claimed && bet.payout) {
+        entry.won += Number(bet.payout) / 10_000_000;
+        entry.wins += 1;
+      }
+      entry.count += 1;
+      map.set(addr, entry);
+    }
+
+    rows = [...map.entries()].map(([bettor_address, d]) => ({
+      rank: 0,
+      bettor_address,
+      total_staked_xlm: Math.round(d.staked * 100) / 100,
+      total_won_xlm: Math.round(d.won * 100) / 100,
+      bet_count: d.count,
+      win_rate: d.count === 0 ? 0 : Math.round((d.wins / d.count) * 10000) / 100,
+    }));
+
+    if (metric === 'won') rows.sort((a, b) => b.total_won_xlm - a.total_won_xlm);
+    else if (metric === 'bets') rows.sort((a, b) => b.bet_count - a.bet_count);
+    else {
+      rows = rows.filter((r) => r.bet_count >= 10);
+      rows.sort((a, b) => b.win_rate - a.win_rate);
+    }
+
+    rows = rows.slice(0, limit);
+    rows.forEach((r, i) => { r.rank = i + 1; });
+  } else {
+    const orderClause =
+      metric === 'won'
+        ? 'SUM(COALESCE(b.payout, 0)) DESC'
+        : metric === 'bets'
+          ? 'COUNT(*) DESC'
+          : 'ROUND(COUNT(*) FILTER (WHERE b.claimed AND b.payout IS NOT NULL)::numeric / NULLIF(COUNT(*), 0) * 100, 2) DESC';
+
+    const havingClause = metric === 'winrate' ? 'HAVING COUNT(*) >= 10' : '';
+
+    const query = `
+      SELECT
+        b.bettor_address,
+        ROUND(SUM(b.amount_xlm)::numeric, 2) AS total_staked_xlm,
+        ROUND(SUM(COALESCE(b.payout, 0)) / 10000000.0, 2) AS total_won_xlm,
+        COUNT(*) AS bet_count,
+        CASE
+          WHEN COUNT(*) = 0 THEN 0
+          ELSE ROUND(COUNT(*) FILTER (WHERE b.claimed AND b.payout IS NOT NULL)::numeric / COUNT(*) * 100, 2)
+        END AS win_rate
+      FROM bets b
+      GROUP BY b.bettor_address
+      ${havingClause}
+      ORDER BY ${orderClause}
+      LIMIT $1
+    `;
+
+    const result = await pool.query(query, [limit]);
+    rows = result.rows.map((r: any, i: number) => ({
+      rank: i + 1,
+      bettor_address: r.bettor_address,
+      total_staked_xlm: Number(r.total_staked_xlm) || 0,
+      total_won_xlm: Number(r.total_won_xlm) || 0,
+      bet_count: Number(r.bet_count) || 0,
+      win_rate: Number(r.win_rate) || 0,
+    }));
+  }
+
+  await cache.set(cacheKey, rows, 60);
+  return rows;
+}
+
 export async function getPlatformStats(): Promise<PlatformStats> {
   const cacheKey = 'platform:stats';
   const cached = await cache.get<PlatformStats>(cacheKey);

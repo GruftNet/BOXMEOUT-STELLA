@@ -64,7 +64,7 @@ export function useCreateMarket(): UseCreateMarketResult {
     const address = getConnectedAddress();
     if (!address) throw new Error('Wallet not connected');
 
-    setTxStatus('pending');
+    setTxStatus('signing');
     setTxHash(null);
     setError(null);
 
@@ -90,8 +90,8 @@ export function useCreateMarket(): UseCreateMarketResult {
       setTxHash(hash);
 
       // 4. Parse market ID from result
-      const { SorobanRpc } = await import('@stellar/stellar-sdk');
-      const server = new SorobanRpc.Server(
+      const { rpc } = await import('@stellar/stellar-sdk');
+      const server = new rpc.Server(
         process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'mainnet'
           ? 'https://soroban-rpc.stellar.org'
           : 'https://soroban-testnet.stellar.org',

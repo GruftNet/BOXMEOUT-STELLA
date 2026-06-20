@@ -1,77 +1,19 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { Proposal, ProposalStatus } from '@/types';
-
-// Mock proposals for the UI
-const MOCK_PROPOSALS: Proposal[] = [
-  {
-    id: 'prop_1',
-    type: 'fee_rate',
-    value: 40,
-    description: 'Increase the fee rate to 40 bps to support the treasury.',
-    status: 'Active',
-    proposer: 'CBX...4A',
-    votesFor: 50000,
-    votesAgainst: 15000,
-    votesAbstain: 5000,
-    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(), // 2 days ago
-    expiresAt: new Date(Date.now() + 86400000 * 5).toISOString(), // 5 days from now
-  },
-  {
-    id: 'prop_2',
-    type: 'add_token',
-    value: 'CBZ...X1',
-    description: 'Add USDC to the approved token list for market settlements.',
-    status: 'Passed',
-    proposer: 'CCM...9Z',
-    votesFor: 120000,
-    votesAgainst: 10000,
-    votesAbstain: 0,
-    createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
-    expiresAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-  },
-  {
-    id: 'prop_3',
-    type: 'max_discount_rate',
-    value: 600,
-    description: 'Change the maximum discount rate to 600 bps.',
-    status: 'Executed',
-    proposer: 'CDM...8B',
-    votesFor: 80000,
-    votesAgainst: 20000,
-    votesAbstain: 2000,
-    createdAt: new Date(Date.now() - 86400000 * 20).toISOString(),
-    expiresAt: new Date(Date.now() - 86400000 * 13).toISOString(),
-  },
-  {
-    id: 'prop_4',
-    type: 'remove_token',
-    value: 'CBY...Z3',
-    description: 'Remove AQUA from the approved tokens due to low liquidity.',
-    status: 'Failed',
-    proposer: 'CBM...1A',
-    votesFor: 30000,
-    votesAgainst: 90000,
-    votesAbstain: 10000,
-    createdAt: new Date(Date.now() - 86400000 * 15).toISOString(),
-    expiresAt: new Date(Date.now() - 86400000 * 8).toISOString(),
-  }
-];
+import { useProposals } from '@/hooks/useProposals';
+import { ProposalCardSkeleton } from '@/components/governance/ProposalCardSkeleton';
+import type { Proposal, ProposalStatus } from '@/types';
 
 export default function GovernanceList() {
-  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [statusFilter, setStatusFilter] = useState<ProposalStatus | 'All'>('All');
 
-  useEffect(() => {
-    // Mock network fetch
-    setProposals(MOCK_PROPOSALS);
-  }, []);
+  const { proposals, isLoading, isError, error } = useProposals({
+    status: statusFilter === 'All' ? undefined : statusFilter,
+  });
 
-  const filteredProposals = proposals.filter((p) => 
-    statusFilter === 'All' || p.status === statusFilter
-  );
+  const filteredProposals = proposals;
 
   return (
     <div className="max-w-4xl mx-auto p-8">
@@ -83,7 +25,7 @@ export default function GovernanceList() {
         <div className="flex gap-4">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
+            onChange={(e) => setStatusFilter(e.target.value as ProposalStatus | 'All')}
             className="px-4 py-2 bg-gray-800 border border-gray-700 rounded text-sm font-medium"
           >
             <option value="All">All Proposals</option>
@@ -92,8 +34,8 @@ export default function GovernanceList() {
             <option value="Failed">Failed</option>
             <option value="Executed">Executed</option>
           </select>
-          <Link 
-            href="/governance/new" 
+          <Link
+            href="/governance/new"
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors"
           >
             New Proposal
@@ -101,8 +43,17 @@ export default function GovernanceList() {
         </div>
       </div>
 
+      {isError && (
+        <div className="text-center p-8 bg-red-900/20 border border-red-800 rounded-xl mb-6">
+          <p className="text-red-400">Failed to load proposals. Please try again.</p>
+          {error && <p className="text-red-300 text-sm mt-1">{error.message}</p>}
+        </div>
+      )}
+
       <div className="space-y-4">
-        {filteredProposals.length === 0 ? (
+        {isLoading && filteredProposals.length === 0 ? (
+          Array.from({ length: 4 }).map((_, i) => <ProposalCardSkeleton key={i} />)
+        ) : filteredProposals.length === 0 ? (
           <div className="text-center p-8 bg-gray-800/50 rounded-xl border border-gray-700">
             <p className="text-gray-400">No proposals found matching this filter.</p>
           </div>
@@ -118,7 +69,7 @@ export default function GovernanceList() {
 
 function ProposalCard({ proposal }: { proposal: Proposal }) {
   const totalVotes = proposal.votesFor + proposal.votesAgainst + proposal.votesAbstain;
-  
+
   const getStatusColor = (status: ProposalStatus) => {
     switch (status) {
       case 'Active': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
@@ -161,7 +112,7 @@ function ProposalCard({ proposal }: { proposal: Proposal }) {
               <span>{totalVotes.toLocaleString()} votes cast</span>
             </div>
           </div>
-          
+
           <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center">
             <div className="text-sm font-medium text-gray-400 mb-1">
               {getTimeRemaining()}

@@ -6,6 +6,7 @@ export interface AdminJwtPayload extends jwt.JwtPayload {
   role: 'admin';
 }
 
+/* eslint-disable @typescript-eslint/no-namespace */
 declare global {
   namespace Express {
     interface Request {
@@ -13,6 +14,7 @@ declare global {
     }
   }
 }
+/* eslint-enable @typescript-eslint/no-namespace */
 
 export function requireAdminJwt(req: Request, _res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;

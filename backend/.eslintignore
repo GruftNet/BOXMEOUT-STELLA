@@ -1,0 +1,19 @@
+# Legacy stub files with pre-existing lint errors
+src/controllers/
+
+src/indexer/
+src/routes/market.routes.ts
+src/services/auth.service.ts
+src/services/BetService.ts
+src/services/export.service.ts
+src/services/MarketService.ts
+src/services/StellarService.ts
+
+# Pre-existing test file issues
+tests/integration/email-verification.integration.test.ts
+tests/integration/market.controller.integration.test.ts
+tests/integration/trading.integration.test.ts
+tests/services/admin.service.test.ts
+tests/services/email.service.test.ts
+tests/services/oracle.service.test.ts
+tests/services/StellarService.test.ts

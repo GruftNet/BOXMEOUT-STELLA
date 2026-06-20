@@ -9,7 +9,7 @@ import { submitBet } from '../services/wallet';
 import { useAppStore } from '../store';
 
 export interface UsePlaceBetResult {
-  placeBet: (market_id: string, side: BetSide, amount_xlm: number) => Promise<void>;
+  placeBet: (market_id: string, side: BetSide, amount: number, token: string, minXlmOut: number) => Promise<void>;
   txStatus: TxStatus;
   txHash: string | null;
   error: string | null;
@@ -27,14 +27,14 @@ export function usePlaceBet(): UsePlaceBetResult {
   const { setTxStatus: setAppTxStatus } = useAppStore();
 
   const placeBet = useCallback(
-    async (market_id: string, side: BetSide, amount_xlm: number) => {
+    async (market_id: string, side: BetSide, amount: number, token: string, minXlmOut: number) => {
       setError(null);
       setTxStatus({ hash: null, status: 'signing', error: null });
 
       try {
         // Sign and broadcast transaction
         setTxStatus({ hash: null, status: 'broadcasting', error: null });
-        const hash = await submitBet(market_id, side, amount_xlm);
+        const hash = await submitBet(market_id, side, amount, token, minXlmOut);
 
         // Confirm transaction
         setTxStatus({ hash, status: 'confirming', error: null });

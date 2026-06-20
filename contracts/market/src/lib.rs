@@ -11,14 +11,14 @@
 mod tests;
 
 use soroban_sdk::{
-    contract, contractimpl, contractclient, token, Address, BytesN, Env, Map, Vec,
+    contract, contractimpl, contractclient, token, Address, BytesN, Env, Map, Vec, String,
 };
 
 use boxmeout_shared::{
     errors::ContractError,
     types::{
         BetRecord, BetSide, ClaimReceipt, Config, FightDetails, MarketConfig,
-        MarketState, MarketStatus, OptionalOracleRole, OptionalOutcome, Outcome, OracleReport, OracleRole,
+        MarketState, MarketStatus, OptionalOracleRole, OptionalOutcome, Outcome, OracleReport, OracleRole, ApprovedToken,
     },
     amm::{lmsr_cost, lmsr_price, LMSR_B_MIN},
 };
@@ -41,11 +41,12 @@ const PENDING_REPORTS: &str = "PENDING_REPORTS";
 /// Maximum TTL for market data (30 days in ledger entries)
 const MAX_TTL: u32 = 2_592_000;
 
-// ─── Cross-contract client for oracle whitelist check ─────────────────────────
+// ─── Cross-contract client for factory ───────────────────────────────────────
 #[contractclient(name = "FactoryClient")]
 pub trait FactoryInterface {
     fn get_oracles(env: Env) -> Vec<Address>;
     fn is_paused(env: Env) -> bool;
+    fn get_approved_token(env: Env, token: Address) -> Option<ApprovedToken>;
 }
 
 #[contract]
@@ -111,6 +112,106 @@ impl Market {
         env.storage().persistent().extend_ttl(&STATE, MAX_TTL, MAX_TTL);
         env.storage().persistent().extend_ttl(&BETS, MAX_TTL, MAX_TTL);
         env.storage().persistent().extend_ttl(&BETTOR_LIST, MAX_TTL, MAX_TTL);
+    }
+
+    /// Gets the factory address.
+    fn get_factory(env: &Env) -> Result<Address, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&FACTORY)
+            .ok_or(ContractError::NotFactory)
+    }
+
+    /// Checks if a token is approved for betting via the factory.
+    fn require_token_approved(env: &Env, token: &Address) -> Result<ApprovedToken, ContractError> {
+        let factory = Self::get_factory(env)?;
+        let client = FactoryClient::new(env, &factory);
+        let approved = client.get_approved_token(token.clone())
+            .ok_or(ContractError::TokenNotApproved)?;
+        if !approved.active {
+            return Err(ContractError::TokenNotApproved);
+        }
+        Ok(approved)
+    }
+
+    /// Converts a token to XLM via Stellar DEX path payment.
+    /// Returns the amount of XLM received.
+    ///
+    /// # Errors
+    /// - `NoPathFound`: No DEX path exists for this conversion
+    /// - `SlippageExceeded`: Received XLM is below min_xlm_out
+    fn path_pay_in(
+        env: &Env,
+        from_token: &Address,
+        from_amount: i128,
+        min_xlm_out: i128,
+    ) -> Result<i128, ContractError> {
+        // Native XLM - no conversion needed
+        let xlm_address = Address::from_string(&String::from_slice(env, "XLM"));
+        if from_token.clone() == xlm_address {
+            if from_amount < min_xlm_out {
+                return Err(ContractError::SlippageExceeded);
+            }
+            return Ok(from_amount);
+        }
+
+        // For token-to-XLM, we use the token's swap function (simulate path payment)
+        // In production, this would invoke the actual Stellar path payment via
+        // the token's built-in swap or via a DEX aggregator contract.
+        // For now, we use a simple 1:1 rate as placeholder - real implementation
+        // would call the actual Stellar DEX path payment operations.
+        let token_client = token::Client::new(env, from_token);
+        
+        // Attempt swap via the token's swap function (if available)
+        // This is a placeholder - actual implementation would use:
+        // soroban_sdk::path_payment::send_payment()
+        // For now, we simulate a swap with 1:1 for testing purposes
+        // Real path payment would be done via stellar_sdk in the frontend
+        
+        // Placeholder: assume 1:1 conversion for testing
+        // TODO: Implement actual path payment using Stellar's DEX
+        let xlm_received = from_amount; // Simulated rate
+        
+        if xlm_received < min_xlm_out {
+            return Err(ContractError::SlippageExceeded);
+        }
+        
+        Ok(xlm_received)
+    }
+
+    /// Converts XLM to a token via Stellar DEX reverse path payment.
+    /// Returns the amount of tokens received.
+    ///
+    /// # Errors
+    /// - `NoPathFound`: No DEX path exists for this conversion
+    /// - `SlippageExceeded`: Received tokens is below min_token_out
+    fn path_pay_out(
+        env: &Env,
+        to_token: &Address,
+        xlm_amount: i128,
+        min_token_out: i128,
+    ) -> Result<i128, ContractError> {
+        // Native XLM - no conversion needed
+        let xlm_address = Address::from_string(&String::from_slice(env, "XLM"));
+        if to_token.clone() == xlm_address {
+            if xlm_amount < min_token_out {
+                return Err(ContractError::SlippageExceeded);
+            }
+            return Ok(xlm_amount);
+        }
+
+        // For XLM-to-token, perform reverse swap
+        let token_client = token::Client::new(env, to_token);
+        
+        // Placeholder: assume 1:1 conversion for testing
+        // TODO: Implement actual reverse path payment using Stellar's DEX
+        let token_received = xlm_amount; // Simulated rate
+        
+        if token_received < min_token_out {
+            return Err(ContractError::SlippageExceeded);
+        }
+        
+        Ok(token_received)
     }
 }
 
@@ -197,10 +298,14 @@ impl Market {
         side: BetSide,
         amount: i128,
         token: Address,
+        min_xlm_out: i128,
     ) -> Result<BetRecord, ContractError> {
         // ── CHECKS ────────────────────────────────────────────────────────────
         bettor.require_auth();
         Self::require_not_paused(&env)?;
+
+        // Verify token is approved for betting
+        let _approved_token = Self::require_token_approved(&env, &token)?;
 
         let state = Self::load_state(&env)?;
 
@@ -221,13 +326,17 @@ impl Market {
             return Err(ContractError::BetTooLarge);
         }
 
-        // Compute LMSR marginal cost — this is what the bettor pays.
-        // `amount` is their desired bet size; cost ≤ amount always.
+        // ── TOKEN CONVERSION ──────────────────────────────────────────────────
+        // Convert the user's token to XLM via DEX path payment
+        let xlm_received = Self::path_pay_in(&env, &token, amount, min_xlm_out)?;
+
+        // Compute LMSR marginal cost in XLM — this is what the bettor pays.
+        // `xlm_received` is the XLM equivalent after conversion.
         let cost = lmsr_cost(
             state.pool_a,
             state.pool_b,
             state.pool_draw,
-            amount,
+            xlm_received,
             side.clone(),
             state.config.b,
         )?;
@@ -251,7 +360,9 @@ impl Market {
             bettor: bettor.clone(),
             market_id: new_state.market_id,
             side: side.clone(),
-            amount: cost, // LMSR marginal cost actually paid; pool and refund must use the same unit
+            amount: cost, // XLM equivalent after conversion
+            original_token: token.clone(),
+            original_amount: amount, // Original token amount before conversion
             placed_at: env.ledger().timestamp(),
             claimed: false,
         };
@@ -271,9 +382,10 @@ impl Market {
         Self::extend_market_ttl(&env);
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
-        // Transfer exactly the LMSR marginal cost from bettor to contract.
+        // Transfer the original token amount from bettor to contract.
+        // The contract received XLM equivalent via path payment, but holds the original token.
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&bettor, &env.current_contract_address(), &cost);
+        token_client.transfer(&bettor, &env.current_contract_address(), &amount);
 
         boxmeout_shared::emit_bet_placed(&env, new_state.market_id, bet.clone());
 
@@ -416,7 +528,7 @@ impl Market {
     pub fn claim_winnings(
         env: Env,
         bettor: Address,
-        token: Address,
+        preferred_token: Address,
     ) -> Result<ClaimReceipt, ContractError> {
         // ── CHECKS ────────────────────────────────────────────────────────────
         bettor.require_auth();
@@ -478,8 +590,6 @@ impl Market {
             .ok_or(ContractError::InsufficientAmount)?;
 
         // Per-bettor fee: proportional share of the total protocol fee.
-        // fee_i = bettor_stake * total_fee / winning_pool
-        // This ensures Σ fee_i = total_fee (no fee over/under-collection across bettors).
         let fee = if winning_pool > 0 {
             bettor_stake
                 .checked_mul(total_fee)
@@ -488,13 +598,53 @@ impl Market {
         } else {
             0
         };
-        let payout = if winning_pool > 0 {
+        let payout_xlm = if winning_pool > 0 {
             bettor_stake
                 .checked_mul(net_pool)
                 .and_then(|v| v.checked_div(winning_pool))
                 .ok_or(ContractError::InsufficientAmount)?
         } else {
             0
+        };
+
+        // ── TOKEN CONVERSION ──────────────────────────────────────────────────
+        // Try to convert XLM payout to preferred token via reverse path payment
+        // Get slippage tolerance from factory for the preferred token
+        let min_token_out = if payout_xlm > 0 {
+            let approved = Self::require_token_approved(&env, &preferred_token)?;
+            // Calculate minimum acceptable token amount based on max slippage
+            let slippage_factor = 10_000i128
+                .checked_sub(approved.max_slippage_bps as i128)
+                .ok_or(ContractError::InsufficientAmount)?;
+            payout_xlm
+                .checked_mul(slippage_factor)
+                .and_then(|v| v.checked_div(10_000))
+                .ok_or(ContractError::InsufficientAmount)?
+        } else {
+            0
+        };
+
+        // Net payout after fee (in XLM)
+        let net_payout_xlm = payout_xlm.saturating_sub(fee);
+
+        // Attempt reverse path payment from XLM to preferred token
+        let token_received = if net_payout_xlm > 0 {
+            match Self::path_pay_out(&env, &preferred_token, net_payout_xlm, min_token_out) {
+                Ok(received) => Some(received),
+                Err(_) => None, // Fall back to XLM if path payment fails
+            }
+        } else {
+            None
+        };
+
+        // Use converted amount if successful, otherwise fall back to XLM
+        let (payout_token, payout_amount) = match token_received {
+            Some(received) => (preferred_token.clone(), received),
+            None => {
+                // Fall back to XLM if reverse path payment fails
+                let xlm_address = Address::from_string(&String::from_slice(&env, "XLM"));
+                (xlm_address.clone(), net_payout_xlm)
+            }
         };
 
         // ── EFFECTS ───────────────────────────────────────────────────────────
@@ -512,23 +662,17 @@ impl Market {
         let receipt = ClaimReceipt {
             bettor: bettor.clone(),
             market_id: state.market_id,
-            amount_won: payout,
+            amount_won: payout_amount,
             fee_deducted: fee,
             claimed_at: env.ledger().timestamp(),
         };
 
         // ── INTERACTIONS ──────────────────────────────────────────────────────
-        let token_client = token::Client::new(&env, &token);
-        let treasury: Address = env
-            .storage().persistent()
-            .get(&TREASURY)
-            .ok_or(ContractError::Unauthorized)?;
-
-        if fee > 0 {
-            token_client.transfer(&env.current_contract_address(), &treasury, &fee);
-        }
-        if payout > 0 {
-            token_client.transfer(&env.current_contract_address(), &bettor, &payout);
+        let token_client = token::Client::new(&env, &payout_token);
+        
+        // Transfer payout to bettor (fee already deducted from net_payout_xlm)
+        if payout_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &bettor, &payout_amount);
         }
 
         // ── CLEANUP ───────────────────────────────────────────────────────────

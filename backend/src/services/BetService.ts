@@ -44,6 +44,8 @@ export async function recordBet(
   amount: string,
   tx_hash: string,
   ledger_sequence: number,
+  original_token?: string,
+  original_amount?: string,
 ): Promise<Bet> {
   if (!market_id || !bettor_address || !side || !amount || !tx_hash) {
     throw AppError.badRequest('Missing required bet fields');
@@ -54,15 +56,18 @@ export async function recordBet(
     throw AppError.badRequest('Invalid Stellar address format');
   }
 
+  // Default to XLM if not specified
+  const token = original_token || 'XLM';
+  const origAmount = original_amount || amount;
   const amount_xlm = Number(amount) / 10_000_000;
 
   try {
     const result = await pool.query(
-      `INSERT INTO bets (market_id, bettor_address, side, amount, amount_xlm, tx_hash, ledger_sequence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO bets (market_id, bettor_address, side, amount, amount_xlm, original_token, original_amount, tx_hash, ledger_sequence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (tx_hash) DO UPDATE SET tx_hash = EXCLUDED.tx_hash
        RETURNING *`,
-      [market_id, bettor_address, side, amount, amount_xlm, tx_hash, ledger_sequence],
+      [market_id, bettor_address, side, amount, amount_xlm, token, origAmount, tx_hash, ledger_sequence],
     );
 
     const bet = result.rows[0];
