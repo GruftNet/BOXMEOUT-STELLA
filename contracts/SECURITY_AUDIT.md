@@ -202,3 +202,95 @@ Use `env.crypto().ed25519_verify()` with the raw 32-byte public key extracted fr
 6. Admin privilege is verified by comparing caller address to stored `ADMIN` key — not by a passed-in boolean.
 7. All arithmetic uses `i128` with explicit floor division — no floating point.
 8. `fee_bps` is capped at 1000 (10%) at market creation time.
+
+---
+
+## Governance Contract Security Audit
+
+**Date:** 2026-06-20
+**Scope:** `contracts/governance/src/lib.rs` — `create_proposal`, `vote`, `finalize`, `execute`, `veto`
+
+---
+
+### FINDING-GOV-001 — Reentrancy in `execute()` via cross-contract callback
+
+| Field | Value |
+|---|---|
+| Function | `Governance::execute` |
+| Vulnerability | Malicious factory or treasury contract could call back into `execute()` during its own function body, re-entering with status still `Passed` and re-executing the proposal |
+| Severity | Critical |
+| Status | **RESOLVED** |
+
+**Description**
+`execute()` makes a cross-contract call to either `FactoryGovClient::set_fee_bps`, `update_token_list`, or `TreasuryGovClient::set_max_discount`. If any of these contracts were malicious (or compromised) they could call back into `Governance::execute()` before the proposal's `status` was persisted as `Executed`.
+
+**Fix Applied**
+Strict Checks-Effects-Interactions pattern:
+1. CHECKS: verify `proposal.status == Passed` and `ledger.sequence >= execute_after`
+2. EFFECTS: set `proposal.status = Executed` and write to persistent storage **before** any cross-contract call
+3. INTERACTIONS: cross-contract calls to factory/treasury executed last
+
+Because the status is written to persistent storage before the INTERACTIONS step, any reentrant call to `execute()` hits the `proposal.status != Passed` guard in the CHECKS phase and returns `ProposalNotPassed`, halting the reentrant path.
+
+If the cross-contract call panics (e.g., factory is unavailable), the entire Soroban host function invocation reverts — including the `status = Executed` write — returning the proposal to `Passed`. This is intentional: a failed execution can be retried after fixing the downstream contract.
+
+---
+
+### FINDING-GOV-002 — Missing `require_auth` on state-mutating entry points
+
+| Field | Value |
+|---|---|
+| Functions | `create_proposal`, `vote`, `veto` |
+| Vulnerability | Without auth checks, any contract or account could submit, vote, or veto proposals on behalf of arbitrary addresses |
+| Severity | High |
+| Status | **RESOLVED** |
+
+**Fix Applied**
+`proposer.require_auth()` is the **first statement** in `create_proposal`.
+`voter.require_auth()` is the **first statement** in `vote`.
+`admin.require_auth()` is the **first statement** in `veto`, followed immediately by `require_admin()`.
+
+---
+
+### FINDING-GOV-003 — Ledger entry expiry during voting or timelock period
+
+| Field | Value |
+|---|---|
+| Affected keys | `DataKey::Proposal(id)`, `DataKey::Votes(id)`, `DataKey::VetoCooldown(disc)` |
+| Vulnerability | Persistent storage entries expire after `max_entry_ttl` ledgers; a proposal could expire mid-vote or before `execute()` is called |
+| Severity | Medium |
+| Status | **RESOLVED** |
+
+**Fix Applied**
+Every write to persistent storage calls `extend_ttl(key, TTL_THRESHOLD=172_800, TTL_EXTEND_TO=604_800)`.
+`TTL_EXTEND_TO` (604_800 ledgers ≈ 35 days) exceeds the combined voting period (120,960) + timelock (34,560), ensuring data is live for the entire lifecycle plus margin.
+
+---
+
+### FINDING-GOV-004 — Vote-buying after proposal creation
+
+| Field | Value |
+|---|---|
+| Function | `vote` |
+| Vulnerability | A voter could acquire XLM between proposal creation and their vote to amplify voting power |
+| Severity | Medium |
+| Status | **ACCEPTED RISK (inherent to Soroban)** |
+
+**Description**
+True snapshot voting (reading balance at a historical ledger) is not supported by the Soroban host. The current implementation reads `token::Client::balance(&voter)` at the time `vote()` is called, not at `snapshot_ledger`. A voter can therefore acquire XLM between proposal creation and their vote.
+
+**Mitigations in place**
+- The 7-day voting period is short enough that large XLM acquisitions are visible on-chain and detectable by governance participants.
+- Once a vote is recorded the power is immutable — re-purchasing XLM after voting has no effect.
+- Future mitigation: implement a checkpoint/lock mechanism where voters must lock XLM before the proposal is created; this is out of scope for the initial implementation.
+
+---
+
+### Governance Security Invariants
+
+1. `require_auth()` is the **first** call in `create_proposal`, `vote`, and `veto`.
+2. `proposal.status = Executed` is written to persistent storage **before** any cross-contract call in `execute()` (CEI anti-reentrancy).
+3. All persistent entries call `extend_ttl()` immediately after every write.
+4. Veto cooldown is keyed per proposal-type discriminant, preventing re-proposal for 7 days after a veto.
+5. `finalize()` and `execute()` are permissionless — callable by anyone, guarded only by ledger sequence checks.
+6. Quorum check uses integer arithmetic only: `total_votes * 20 >= quorum_supply` (no floating point).
