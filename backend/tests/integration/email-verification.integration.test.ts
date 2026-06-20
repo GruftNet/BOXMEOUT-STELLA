@@ -1,4 +1,13 @@
 import request from 'supertest';
+
+// src/index.ts calls validateEnv() at module load and exits the process if
+// any required var is missing — set test defaults before importing it.
+process.env.STELLAR_RPC_URL ??= 'https://soroban-testnet.stellar.org';
+process.env.ORACLE_KEYPAIR ??= 'SBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
+process.env.ADMIN_JWT_SECRET ??= process.env.JWT_SECRET ?? 'test-admin-jwt-secret';
+process.env.FACTORY_CONTRACT_ADDRESS ??= 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
+process.env.PORT ??= '0';
+
 import app from '../../src/index';
 import * as authService from '../../src/services/auth.service';
 import { redis } from '../../src/services/cache.service';

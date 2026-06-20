@@ -127,7 +127,7 @@ describe('handleMarketResolved', () => {
 
   it('updates status and outcome', async () => {
     await handleMarketResolved(
-      event('MarketResolved', { market_id: MARKET_ID, outcome: 'fighter_a', resolved_at: new Date().toISOString(), oracle_used: 'primary' }),
+      event('MarketResolved', { market_id: MARKET_ID, outcome: 'fighter_a', resolved_at: new Date().toISOString(), oracle_address: 'primary' }),
     );
     const [row] = await q('SELECT status, outcome, oracle_used FROM markets WHERE market_id = $1', [MARKET_ID]);
     expect(row.status).toBe('resolved');

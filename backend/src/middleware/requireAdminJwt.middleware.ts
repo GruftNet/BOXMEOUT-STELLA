@@ -37,6 +37,6 @@ export function requireAdminJwt(req: Request, _res: Response, next: NextFunction
     req.admin = payload;
     next();
   } catch {
-    next(new AppError(403, 'Invalid or expired token'));
+    next(new AppError(401, 'Invalid or expired token'));
   }
 }

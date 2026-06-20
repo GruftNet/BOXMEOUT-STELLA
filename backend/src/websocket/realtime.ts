@@ -75,6 +75,7 @@ class MarketRateLimiter {
 const _rateLimiter = new MarketRateLimiter();
 const _feeds = new Set<ActivityFeed>();
 let _subscriberReady = false;
+let _pmessageListener: ((pattern: string, channel: string, message: string) => void) | null = null;
 
 /** Publish an activity event to Redis for all cluster instances to forward locally. */
 export function publishEvent(marketId: string, event: ActivityEvent): void {
@@ -90,14 +91,15 @@ async function ensureRedisSubscriber(): Promise<void> {
   if (_subscriberReady) return;
 
   await redisSub.psubscribe(MARKET_EVENTS_PATTERN);
-  redisSub.on('pmessage', (_pattern: string, channel: string, message: string) => {
+  _pmessageListener = (_pattern: string, channel: string, message: string) => {
     const marketId = parseMarketIdFromChannel(channel);
     if (!marketId) return;
 
     for (const feed of _feeds) {
       feed.forwardToLocalClients(marketId, message);
     }
-  });
+  };
+  redisSub.on('pmessage', _pmessageListener);
 
   _subscriberReady = true;
   logger.info('Redis pub/sub subscriber listening on market:*:events');
@@ -216,6 +218,10 @@ export class ActivityFeed {
 
     if (_feeds.size === 0 && _subscriberReady) {
       await redisSub.punsubscribe(MARKET_EVENTS_PATTERN);
+      if (_pmessageListener) {
+        redisSub.off('pmessage', _pmessageListener);
+        _pmessageListener = null;
+      }
       _subscriberReady = false;
     }
   }

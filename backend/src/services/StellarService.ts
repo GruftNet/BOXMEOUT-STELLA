@@ -5,7 +5,15 @@
 // Contributors: implement every function marked TODO.
 // ============================================================
 
-import { Account, Keypair, Networks, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Contract, Keypair, Networks, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+
+export class StellarInvocationError extends Error {
+  constructor(message: string, public readonly txHash?: string) {
+    super(message);
+    this.name = 'StellarInvocationError';
+    Object.setPrototypeOf(this, StellarInvocationError.prototype);
+  }
+}
 
 /**
  * Builds, simulates, signs, and submits a Soroban contract invocation.
@@ -29,8 +37,9 @@ export async function invokeContract(
   args: xdr.ScVal[],
   source_keypair?: Keypair,
 ): Promise<string> {
-  const horizonUrl = process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
-  const rpcUrl = process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  if (!rpcUrl) throw new Error('STELLAR_RPC_URL env var is required');
+
   const networkPassphrase = process.env.STELLAR_NETWORK === 'public'
     ? Networks.PUBLIC
     : Networks.TESTNET;
@@ -41,22 +50,15 @@ export async function invokeContract(
     source_keypair = Keypair.fromSecret(oracleSecret);
   }
 
-  const server = new rpc.Server(horizonUrl);
-  const sorobanServer = new rpc.Server(rpcUrl);
+  const server = new rpc.Server(rpcUrl);
 
   const sourceAccount = await server.getAccount(source_keypair.publicKey());
-
-  const invokeContractHostFunction = xdr.HostFunction.hostFunctionTypeInvokeContract(
-    new xdr.InvokeContractArgs({
-      contractAddress: xdr.ScAddress.contractFromAddress(contract_address),
-      functionName: xdr.ScSymbol.fromString(method),
-      args,
-    }),
-  );
+  const operation = new Contract(contract_address).call(method, ...args);
 
   const baseFee = 100; // Base fee in stroops
   let attempts = 0;
-  const maxRetries = 3;
+  const maxRetries = 4;
+  let lastHash: string | undefined;
 
   while (attempts < maxRetries) {
     try {
@@ -65,19 +67,18 @@ export async function invokeContract(
         fee: (baseFee * Math.pow(2, attempts)).toString(),
         networkPassphrase,
       })
-        .addOperation(Operation.invokeHostFunction({ hostFunction: invokeContractHostFunction, auth: [] }))
+        .addOperation(operation)
         .setTimeout(30)
         .build();
 
       // Step 3: Simulate to get resource fee
-      const simulation = await sorobanServer.simulateTransaction(transaction);
+      const simulation = await server.simulateTransaction(transaction);
       if ('error' in simulation && simulation.error) {
-        throw new Error(`Simulation error: ${JSON.stringify(simulation.error)}`);
+        throw new StellarInvocationError(`Simulation error: ${JSON.stringify(simulation.error)}`);
       }
 
-      const simResult = simulation as { results?: Array<{ minResourceFee?: string }> };
-      const minResourceFee = simResult.results?.[0]?.minResourceFee;
-      const resourceFee = minResourceFee ? parseInt(minResourceFee, 10) : 0;
+      const simResult = simulation as { minResourceFee?: string };
+      const resourceFee = simResult.minResourceFee ? parseInt(simResult.minResourceFee, 10) : 0;
 
       // Step 4: Set total fee
       const totalFee = (baseFee * Math.pow(2, attempts)) + resourceFee;
@@ -87,10 +88,11 @@ export async function invokeContract(
       transaction.sign(source_keypair);
 
       // Step 6: Submit
-      const submitResponse = await sorobanServer.sendTransaction(transaction);
+      const submitResponse = await server.sendTransaction(transaction);
+      lastHash = submitResponse.hash;
 
       if (submitResponse.status !== 'PENDING') {
-        throw new Error(`Submit failed: ${submitResponse.status}`);
+        throw new StellarInvocationError(`Submit failed: ${submitResponse.status}`, submitResponse.hash);
       }
 
       const txHash = submitResponse.hash;
@@ -100,29 +102,38 @@ export async function invokeContract(
       const maxWait = 30_000;
 
       while (Date.now() - startTime < maxWait) {
-        const statusResponse = await sorobanServer.getTransaction(txHash);
+        const statusResponse = await server.getTransaction(txHash);
 
         if (statusResponse.status === 'SUCCESS') {
           return txHash;
         } else if (statusResponse.status === 'FAILED') {
-          throw new Error(`Transaction failed: ${JSON.stringify(statusResponse.resultXdr)}`);
+          throw new StellarInvocationError(`Transaction failed: ${JSON.stringify(statusResponse.resultXdr)}`, txHash);
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
 
       // Step 8: Timeout — retry with bumped fee
-      throw new Error('Transaction polling timed out');
+      throw new StellarInvocationError('Transaction polling timed out', txHash);
 
     } catch (err) {
+      // On-chain failures are conclusive — don't waste retries resubmitting them.
+      if (err instanceof StellarInvocationError && err.message.startsWith('Transaction failed')) {
+        throw err;
+      }
+      if (err instanceof StellarInvocationError && err.message.startsWith('Simulation error')) {
+        throw err;
+      }
+
       attempts++;
       if (attempts >= maxRetries) {
-        throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        throw new StellarInvocationError(`Max retries exceeded: ${message}`, lastHash);
       }
     }
   }
 
-  throw new Error('Max retries exceeded');
+  throw new StellarInvocationError('Max retries exceeded', lastHash);
 }
 
 /**
@@ -154,7 +165,7 @@ export async function readContractState<T>(
 
   const invokeContractHostFunction = xdr.HostFunction.hostFunctionTypeInvokeContract(
     new xdr.InvokeContractArgs({
-      contractAddress: xdr.ScAddress.contractFromAddress(contract_address),
+      contractAddress: Address.fromString(contract_address).toScAddress(),
       functionName: xdr.ScSymbol.fromString(method),
       args,
     }),
