@@ -96,6 +96,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxmeout-governance"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "boxmeout-market"
 version = "0.1.0"
 dependencies = [
@@ -105,6 +112,14 @@ dependencies = [
 
 [[package]]
 name = "boxmeout-market-factory"
+version = "0.1.0"
+dependencies = [
+ "boxmeout-shared",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "boxmeout-oracle-registry"
 version = "0.1.0"
 dependencies = [
  "boxmeout-shared",
