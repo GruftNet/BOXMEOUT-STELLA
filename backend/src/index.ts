@@ -14,7 +14,6 @@ import adminRouter from "./routes/admin.routes";
 import disputesRouter from "./routes/disputes.routes";
 import { getPortfolio, getPlatformStats, getLeaderboard } from "./api/controllers/MarketController";
 import governanceRouter from "./routes/governance.routes";
-import { getPortfolio, getPlatformStats } from "./api/controllers/MarketController";
 import claimsRouter from "./routes/bet.routes";
 import { startAutoResolutionCron, startAutoLockCron } from "./cron/autoResolution.cron";
 import { startCleanupCron } from "./cron/cleanup.cron";

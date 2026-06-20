@@ -22,9 +22,8 @@ export interface VoteRecord {
 
 const CACHE_TTL = 30;
 const CACHE_KEY = 'governance:proposals';
-const VOTES_KEY = 'governance:votes';
 
-let proposals: Proposal[] = [
+const proposals: Proposal[] = [
   {
     id: 'prop_1',
     type: 'fee_rate',
@@ -79,7 +78,7 @@ let proposals: Proposal[] = [
   },
 ];
 
-let voteRecords: VoteRecord[] = [];
+const voteRecords: VoteRecord[] = [];
 
 export interface ProposalListOptions {
   status?: string;
