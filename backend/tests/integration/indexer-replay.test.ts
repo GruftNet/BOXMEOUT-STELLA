@@ -59,11 +59,20 @@ jest.mock('../../src/utils/logger');
 // ── Mock: Stellar RPC server (getEvents / getLatestLedger) ─────────────────
 // jest.mock factories are hoisted, so the shared mock fns are exposed on
 // `global` and reached at call time rather than closed over directly.
-const rpcMock = {
+type RpcMock = {
+  getEvents: ReturnType<typeof jest.fn<() => Promise<unknown>>>;
+  getLatestLedger: ReturnType<typeof jest.fn<() => Promise<unknown>>>;
+};
+
+function getGlobalRpcMock(): RpcMock {
+  return (global as unknown as { __rpcMock: RpcMock }).__rpcMock;
+}
+
+const rpcMock: RpcMock = {
   getEvents: jest.fn<() => Promise<unknown>>(),
   getLatestLedger: jest.fn<() => Promise<unknown>>(),
 };
-(global as any).__rpcMock = rpcMock;
+(global as unknown as { __rpcMock: RpcMock }).__rpcMock = rpcMock;
 
 jest.mock('@stellar/stellar-sdk', () => {
   const actual = jest.requireActual('@stellar/stellar-sdk') as Record<string, unknown>;
@@ -72,8 +81,8 @@ jest.mock('@stellar/stellar-sdk', () => {
     rpc: {
       ...(actual.rpc as Record<string, unknown>),
       Server: jest.fn().mockImplementation(() => ({
-        getEvents: (...a: unknown[]) => (global as any).__rpcMock.getEvents(...a),
-        getLatestLedger: (...a: unknown[]) => (global as any).__rpcMock.getLatestLedger(...a),
+        getEvents: (...a: unknown[]) => getGlobalRpcMock().getEvents(...a),
+        getLatestLedger: (...a: unknown[]) => getGlobalRpcMock().getLatestLedger(...a),
       })),
     },
   };
@@ -99,8 +108,8 @@ function mockMarketLockedEvent(ledger: number, marketId: string, txHash: string)
 
 /** Wires getEvents to return one market_locked event per ledger in [from, to]. */
 function stubEventsForRange(from: number, to: number, marketId: string, txPrefix: string) {
-  rpcMock.getEvents.mockImplementation(async (request: any) => {
-    const seq = request.startLedger;
+  rpcMock.getEvents.mockImplementation(async (...args: unknown[]) => {
+    const { startLedger: seq } = args[0] as { startLedger: number };
     if (seq < from || seq > to) return { events: [] };
     return { events: [mockMarketLockedEvent(seq, marketId, `${txPrefix}-${seq}`)] };
   });
