@@ -7,7 +7,7 @@
 import type { Market, MarketStats, PlatformStats } from '../models/Market';
 import type { Bet } from '../models/Bet';
 import { pool } from '../config/db';
-import * as cache from './cache.service';
+import { cacheGet, cacheSet, cacheDelete, cacheDeletePattern } from './cache.service';
 import * as StellarService from './StellarService';
 import { AppError } from '../utils/AppError';
 
@@ -125,7 +125,7 @@ export async function getMarkets(
   const page = pagination?.page ?? 1;
   const limit = pagination?.limit ?? 50;
   const cacheKey = `markets:${statusKey}:${weightKey}:${fighterKey}:${dateFromKey}:${dateToKey}:${page}:${limit}`;
-  const cached = await cache.get<MarketListResult>(cacheKey);
+  const cached = await cacheGet<MarketListResult>(cacheKey);
   if (cached) return cached;
 
   let result: MarketListResult;
@@ -203,7 +203,7 @@ export async function getMarkets(
     };
   }
 
-  await cache.set(cacheKey, result, 30);
+  await cacheSet(cacheKey, result, 30);
   return result;
 }
 
@@ -212,9 +212,9 @@ export async function getMarkets(
  * Clears the market cache and related pattern caches.
  */
 export async function invalidateMarketCache(market_id: string): Promise<void> {
-  await cache.del(`market:${market_id}`);
-  await cache.delPattern(`markets:*`);
-  await cache.del(`market:${market_id}:stats`);
+  await cacheDelete(`market:${market_id}`);
+  await cacheDeletePattern(`markets:*`);
+  await cacheDelete(`market:${market_id}:stats`);
 }
 
 /**
@@ -229,7 +229,7 @@ export async function invalidateMarketCache(market_id: string): Promise<void> {
  */
 export async function getMarketById(market_id: string): Promise<MarketWithOdds> {
   const cacheKey = `market:${market_id}`;
-  const cached = await cache.get<MarketWithOdds>(cacheKey);
+  const cached = await cacheGet<MarketWithOdds>(cacheKey);
   if (cached) return cached;
 
   const market = await db().findMarketById(market_id);
@@ -238,7 +238,7 @@ export async function getMarketById(market_id: string): Promise<MarketWithOdds> 
   const odds = await getMarketOdds(market_id);
   const result: MarketWithOdds = { ...market, odds };
 
-  await cache.set(cacheKey, result, 10);
+  await cacheSet(cacheKey, result, 10);
   return result;
 }
 
@@ -520,7 +520,7 @@ export async function getBetsByMarket(
  */
 export async function getMarketStats(market_id: string): Promise<MarketStats> {
   const cacheKey = `market:${market_id}:stats`;
-  const cached = await cache.get<MarketStats>(cacheKey);
+  const cached = await cacheGet<MarketStats>(cacheKey);
   if (cached) return cached;
 
   const bets = await db().findBetsByMarket(market_id);
@@ -541,7 +541,7 @@ export async function getMarketStats(market_id: string): Promise<MarketStats> {
     total_pooled_xlm,
   };
 
-  await cache.set(cacheKey, stats, 60);
+  await cacheSet(cacheKey, stats, 60);
   return stats;
 }
 
@@ -669,7 +669,7 @@ export async function getLeaderboard(
   limit: number = 50,
 ): Promise<LeaderboardEntry[]> {
   const cacheKey = `leaderboard:${metric}:${limit}`;
-  const cached = await cache.get<LeaderboardEntry[]>(cacheKey);
+  const cached = await cacheGet<LeaderboardEntry[]>(cacheKey);
   if (cached) return cached;
 
   let rows: LeaderboardEntry[];
@@ -748,13 +748,13 @@ export async function getLeaderboard(
     }));
   }
 
-  await cache.set(cacheKey, rows, 60);
+  await cacheSet(cacheKey, rows, 60);
   return rows;
 }
 
 export async function getPlatformStats(): Promise<PlatformStats> {
   const cacheKey = 'platform:stats';
-  const cached = await cache.get<PlatformStats>(cacheKey);
+  const cached = await cacheGet<PlatformStats>(cacheKey);
   if (cached) return cached;
 
   if (_db) {
@@ -774,7 +774,7 @@ export async function getPlatformStats(): Promise<PlatformStats> {
       totalBets: allBets.length,
     };
 
-    await cache.set(cacheKey, stats, 60);
+    await cacheSet(cacheKey, stats, 60);
     return stats;
   }
 
@@ -794,7 +794,7 @@ export async function getPlatformStats(): Promise<PlatformStats> {
     totalBets: Number(totalBets) || 0,
   };
 
-  await cache.set(cacheKey, stats, 60);
+  await cacheSet(cacheKey, stats, 60);
   return stats;
 }
 

@@ -2,29 +2,27 @@ import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
 
-const isProd = process.env.NODE_ENV === 'production';
-
 export function errorMiddleware(
   err: unknown,
   _req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
+  const isProd = process.env.NODE_ENV === 'production';
+
   if (err instanceof AppError) {
     if (err.statusCode >= 500) {
       logger.error({
         message: err.message,
         statusCode: err.statusCode,
-        code: err.code,
         details: err.details,
-        ...(!isProd && { stack: err.stack }),
       });
     }
     res.status(err.statusCode).json({
       error: {
-        statusCode: err.statusCode,
+        code: err.statusCode,
         message: err.message,
-        ...(err.code && { code: err.code }),
+        ...(err.code && { errorCode: err.code }),
         ...(err.details !== undefined && { details: err.details }),
       },
     });
@@ -39,7 +37,7 @@ export function errorMiddleware(
 
   res.status(500).json({
     error: {
-      statusCode: 500,
+      code: 500,
       message: isProd ? 'Internal server error' : message,
     },
   });

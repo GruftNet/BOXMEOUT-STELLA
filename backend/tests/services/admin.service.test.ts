@@ -1,3 +1,5 @@
+process.env.ADMIN_ADDRESS ??= 'GADMIN0000000000000000000000000000000000000000000000000';
+
 import { flagDispute, investigateDispute, resolveDispute, listDisputes } from '../../src/api/controllers/AdminController';
 import { setDbAdapter } from '../../src/services/MarketService';
 import { AppError } from '../../src/utils/AppError';
