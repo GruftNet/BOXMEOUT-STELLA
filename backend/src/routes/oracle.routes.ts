@@ -3,6 +3,7 @@ import {
   submitOracleResult,
   validateSubmitOracleResult,
   getOracleReports,
+  getLeaderboard,
 } from '../api/controllers/OracleController';
 
 const router = Router();
@@ -72,5 +73,41 @@ router.post('/submit', validateSubmitOracleResult, submitOracleResult);
  *         description: No reports found
  */
 router.get('/reports/:match_id', getOracleReports);
+
+/**
+ * @swagger
+ * /oracle/leaderboard:
+ *   get:
+ *     summary: Get all registered oracles sorted by reputation score
+ *     tags: [Oracle]
+ *     description: >
+ *       Returns oracle performance metrics from the oracle_reports table,
+ *       enriched with on-chain stake status from the OracleRegistry contract.
+ *       Oracles are sorted by accepted_reports descending (reputation proxy).
+ *     responses:
+ *       200:
+ *         description: Oracle leaderboard
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 leaderboard:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       oracle_address:
+ *                         type: string
+ *                       total_reports:
+ *                         type: integer
+ *                       accepted_reports:
+ *                         type: integer
+ *                       slash_count:
+ *                         type: integer
+ *                       is_staked:
+ *                         type: boolean
+ */
+router.get('/leaderboard', getLeaderboard);
 
 export default router;

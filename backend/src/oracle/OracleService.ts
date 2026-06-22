@@ -5,13 +5,146 @@
 // ============================================================
 
 import { verify as cryptoVerify, createPublicKey } from 'crypto';
-import { Address, Keypair, xdr } from '@stellar/stellar-sdk';
+import { Address, Keypair, xdr, Contract, rpc } from '@stellar/stellar-sdk';
 import { pool } from '../config/db';
 import { invokeContract } from '../services/StellarService';
 import { logger } from '../utils/logger';
 import { cacheGet, cacheSet } from '../services/cache.service';
 import type { OracleReport } from '../models/OracleReport';
 import type { Market } from '../models/Market';
+
+// ─── Weighted-consensus types ─────────────────────────────────────────────────
+
+export interface OracleVote {
+  oracle_address: string;
+  outcome: FightOutcome;
+  reputation_score: number;
+}
+
+export interface WeightedConsensusResult {
+  winner: FightOutcome | null;
+  total_weight: number;
+  outcome_weights: Record<FightOutcome, number>;
+}
+
+// ─── Reputation query ─────────────────────────────────────────────────────────
+
+/**
+ * Queries the OracleRegistry contract for a single oracle's reputation score.
+ * Returns 1 (floor) if the registry is not configured or the call fails.
+ */
+async function getOracleReputation(oracleAddress: string): Promise<number> {
+  const registryId = process.env.ORACLE_REGISTRY_CONTRACT_ID;
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  if (!registryId || !rpcUrl) {
+    return 1;
+  }
+  try {
+    const server = new rpc.Server(rpcUrl);
+    const contract = new Contract(registryId);
+    const op = contract.call(
+      'get_reputation',
+      new Address(oracleAddress).toScVal(),
+    );
+    const tx = await server.simulateTransaction(
+      // build a minimal Soroban transaction for simulation
+      (op as unknown as { toXDR(): string }).toXDR(),
+    );
+    if (rpc.Api.isSimulationSuccess(tx) && tx.result) {
+      const val = tx.result.retval;
+      return Number(xdr.ScVal.fromXDR(val.toXDR()).i32() ?? 1);
+    }
+  } catch (err) {
+    logger.warn({ err, oracleAddress }, 'getOracleReputation: falling back to 1');
+  }
+  return 1;
+}
+
+/**
+ * Verifies that an oracle has a non-zero stake in the OracleRegistry.
+ * Returns true if stake > 0, or if the registry is not configured (permissive fallback).
+ */
+export async function verifyOracleIsStaked(oracleAddress: string): Promise<boolean> {
+  const registryId = process.env.ORACLE_REGISTRY_CONTRACT_ID;
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  if (!registryId || !rpcUrl) {
+    return true; // no registry configured — allow all whitelisted oracles
+  }
+  try {
+    const server = new rpc.Server(rpcUrl);
+    const contract = new Contract(registryId);
+    const op = contract.call(
+      'get_stake',
+      new Address(oracleAddress).toScVal(),
+    );
+    const tx = await server.simulateTransaction(
+      (op as unknown as { toXDR(): string }).toXDR(),
+    );
+    if (rpc.Api.isSimulationSuccess(tx) && tx.result) {
+      const val = tx.result.retval;
+      const stake = BigInt(xdr.ScVal.fromXDR(val.toXDR()).i128()?.toString() ?? '0');
+      return stake > 0n;
+    }
+  } catch (err) {
+    logger.warn({ err, oracleAddress }, 'verifyOracleIsStaked: falling back to true');
+  }
+  return true;
+}
+
+/**
+ * Evaluates consensus across pending oracle reports for a match using
+ * reputation-weighted voting. Each oracle's vote is weighted by their
+ * on-chain reputation score; the outcome exceeding 50 % of total weight wins.
+ *
+ * Falls back to flat count majority when a reputation score cannot be fetched.
+ */
+export async function evaluateConsensus(match_id: string): Promise<WeightedConsensusResult> {
+  const { rows } = await pool.query<{ oracle_address: string; outcome: string }>(
+    `SELECT oracle_address, outcome
+       FROM oracle_reports
+      WHERE match_id = $1 AND accepted = true
+      ORDER BY reported_at ASC`,
+    [match_id],
+  );
+
+  const outcome_weights: Record<FightOutcome, number> = {
+    fighter_a: 0,
+    fighter_b: 0,
+    draw: 0,
+    no_contest: 0,
+  };
+  let total_weight = 0;
+
+  // Fetch reputation scores in parallel
+  const votes = await Promise.all(
+    rows.map(async (row): Promise<OracleVote> => {
+      const reputation_score = await getOracleReputation(row.oracle_address);
+      return {
+        oracle_address: row.oracle_address,
+        outcome: row.outcome as FightOutcome,
+        reputation_score,
+      };
+    }),
+  );
+
+  for (const vote of votes) {
+    const weight = Math.max(vote.reputation_score, 1);
+    total_weight += weight;
+    outcome_weights[vote.outcome] = (outcome_weights[vote.outcome] ?? 0) + weight;
+  }
+
+  // Outcome with > 50 % of total weight wins
+  let winner: FightOutcome | null = null;
+  for (const [outcome, weight] of Object.entries(outcome_weights)) {
+    if (weight * 2 > total_weight) {
+      winner = outcome as FightOutcome;
+      break;
+    }
+  }
+
+  logger.info({ match_id, winner, total_weight, outcome_weights }, 'evaluateConsensus: result');
+  return { winner, total_weight, outcome_weights };
+}
 
 export type FightOutcome = 'fighter_a' | 'fighter_b' | 'draw' | 'no_contest';
 

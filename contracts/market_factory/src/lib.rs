@@ -432,7 +432,7 @@ impl MarketFactory {
             .get(&APPROVED_TOKENS)
             .unwrap_or_else(|| Map::new(&env));
 
-        tokens.remove(&token);
+        tokens.remove(token);
         env.storage().persistent().set(&APPROVED_TOKENS, &tokens);
         Ok(())
     }
@@ -444,7 +444,7 @@ impl MarketFactory {
             .persistent()
             .get(&APPROVED_TOKENS)
             .unwrap_or_else(|| Map::new(&env));
-        tokens.get(&token)
+        tokens.get(token)
     }
 
     /// Returns all approved tokens (only active ones).

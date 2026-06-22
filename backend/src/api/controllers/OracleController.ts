@@ -4,6 +4,7 @@ import { AppError } from '../../utils/AppError';
 import { validate } from '../middleware/validate';
 import * as OracleService from '../../oracle/OracleService';
 import { redis } from '../../config/redis';
+import { pool } from '../../config/db';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -75,10 +76,16 @@ export async function submitOracleResult(
       return next(new AppError(429, `Rate limit exceeded: match_id ${match_id} already submitted within 60 seconds`));
     }
 
-    // Step 3 — Respond 202 immediately
+    // Step 3 — Verify oracle is staked in OracleRegistry (reject un-staked reporters)
+    const isStaked = await OracleService.verifyOracleIsStaked(oracle_address);
+    if (!isStaked) {
+      return next(new AppError(403, `Oracle ${oracle_address} has no active stake in OracleRegistry`));
+    }
+
+    // Step 4 — Respond 202 immediately
     res.status(202).json({ message: 'Accepted' });
 
-    // Step 4 — Async resolution (fire-and-forget)
+    // Step 5 — Async resolution (fire-and-forget)
     OracleService.submitFightResult(match_id, outcome as OracleService.FightOutcome).catch(
       (err) => {
         // Log but don't crash — response already sent
@@ -95,8 +102,75 @@ export async function submitOracleResult(
  * Returns all oracle reports for a fight.
  */
 export async function getOracleReports(
-  _req: Request,
-  _res: Response,
+  req: Request,
+  res: Response,
+  next: NextFunction,
 ): Promise<void> {
-  // TODO: implement
+  try {
+    const { match_id } = req.params;
+    const { rows } = await pool.query(
+      `SELECT oracle_address, outcome, reported_at, accepted, tx_hash
+         FROM oracle_reports
+        WHERE match_id = $1
+        ORDER BY reported_at ASC`,
+      [match_id],
+    );
+    res.json({ match_id, reports: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/oracle/leaderboard
+ * Returns all registered oracles sorted by reputation_score (descending),
+ * with their stake status and slash history from oracle_reports.
+ *
+ * On-chain reputation and stake are queried via OracleService (best-effort).
+ * If the registry is not configured, is_staked defaults to true.
+ */
+export async function getLeaderboard(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { rows } = await pool.query<{
+      oracle_address: string;
+      total_reports: string;
+      accepted_reports: string;
+      slash_count: string;
+    }>(
+      `SELECT
+         oracle_address,
+         COUNT(*)                                        AS total_reports,
+         COUNT(*) FILTER (WHERE accepted = true)        AS accepted_reports,
+         COUNT(*) FILTER (WHERE accepted = false)       AS slash_count
+       FROM oracle_reports
+       GROUP BY oracle_address`,
+    );
+
+    // Enrich with on-chain stake status (reputation is managed on-chain)
+    const leaderboard = await Promise.all(
+      rows.map(async (row) => {
+        const is_staked = await OracleService.verifyOracleIsStaked(row.oracle_address).catch(() => false);
+        return {
+          oracle_address: row.oracle_address,
+          total_reports: Number(row.total_reports),
+          accepted_reports: Number(row.accepted_reports),
+          slash_count: Number(row.slash_count),
+          is_staked,
+        };
+      }),
+    );
+
+    // Sort by accepted_reports desc (proxy for on-chain reputation) then total_reports
+    leaderboard.sort(
+      (a, b) => b.accepted_reports - a.accepted_reports || b.total_reports - a.total_reports,
+    );
+
+    res.json({ leaderboard });
+  } catch (err) {
+    next(err);
+  }
 }

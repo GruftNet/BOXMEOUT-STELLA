@@ -34,8 +34,10 @@ const TREASURY: &str     = "TREASURY";
 const CLAIMING: &str     = "CLAIMING";
 /// Emergency pause — when true all fund-moving operations are blocked
 const PAUSED: &str       = "PAUSED";
-/// Pending oracle reports for 2-of-3 consensus
+/// Pending oracle reports for weighted consensus
 const PENDING_REPORTS: &str = "PENDING_REPORTS";
+/// Optional OracleRegistry contract address for staking/slashing integration
+const REGISTRY: &str     = "REGISTRY";
 
 // ─── Storage TTL Constants ────────────────────────────────────────────────────
 /// Maximum TTL for market data (30 days in ledger entries)
@@ -47,6 +49,13 @@ pub trait FactoryInterface {
     fn get_oracles(env: Env) -> Vec<Address>;
     fn is_paused(env: Env) -> bool;
     fn get_approved_token(env: Env, token: Address) -> Option<ApprovedToken>;
+}
+
+// ─── Cross-contract client for OracleRegistry ────────────────────────────────
+#[contractclient(name = "OracleRegistryClient")]
+pub trait OracleRegistryInterface {
+    fn get_reputation(env: Env, oracle: Address) -> i32;
+    fn slash(env: Env, oracle: Address, pct_bps: u32) -> Result<(), boxmeout_shared::errors::ContractError>;
 }
 
 #[contract]
@@ -126,7 +135,7 @@ impl Market {
     fn require_token_approved(env: &Env, token: &Address) -> Result<ApprovedToken, ContractError> {
         let factory = Self::get_factory(env)?;
         let client = FactoryClient::new(env, &factory);
-        let approved = client.get_approved_token(token.clone())
+        let approved = client.get_approved_token(token)
             .ok_or(ContractError::TokenNotApproved)?;
         if !approved.active {
             return Err(ContractError::TokenNotApproved);
@@ -484,29 +493,100 @@ impl Market {
         pending.set(oracle.clone(), report.clone());
         env.storage().persistent().set(&PENDING_REPORTS, &pending);
 
-        let mut matching_count = 1u32;
-        let mut conflicting_count = 0u32;
+        // ── Consensus: weighted when registry is available, flat 2-of-3 otherwise ──
+        let registry_opt: Option<Address> = env.storage().persistent().get(&REGISTRY);
 
-        for (stored_oracle, stored_report) in pending.iter() {
-            if stored_oracle != oracle {
-                if stored_report.outcome == report.outcome {
-                    matching_count += 1;
-                } else {
-                    conflicting_count += 1;
+        if let Some(registry_addr) = registry_opt {
+            // Weighted consensus: each oracle's vote is weighted by reputation.
+            // The outcome with > 50 % of total weight wins.
+            let registry = OracleRegistryClient::new(&env, &registry_addr);
+
+            let mut weight_a: i64 = 0;
+            let mut weight_b: i64 = 0;
+            let mut weight_draw: i64 = 0;
+            let mut weight_nc: i64 = 0;
+            let mut total_weight: i64 = 0;
+
+            for (rep_oracle, rep_report) in pending.iter() {
+                let rep = registry.get_reputation(&rep_oracle);
+                // Clamp to REPUTATION_FLOOR (1) so no oracle has zero weight.
+                let weight = (rep as i64).max(1);
+                total_weight += weight;
+                match rep_report.outcome {
+                    Outcome::FighterA  => weight_a += weight,
+                    Outcome::FighterB  => weight_b += weight,
+                    Outcome::Draw      => weight_draw += weight,
+                    Outcome::NoContest => weight_nc += weight,
                 }
             }
-        }
 
-        if matching_count >= 2 {
-            state.outcome = OptionalOutcome::Some(report.outcome.clone());
-            state.status = MarketStatus::Resolved;
-            state.resolved_at = env.ledger().timestamp();
-            state.oracle_used = OptionalOracleRole::Some(OracleRole::Primary);
-            Self::save_state(&env, &state);
-            env.storage().persistent().set(&PENDING_REPORTS, &Map::<Address, OracleReport>::new(&env));
-            boxmeout_shared::emit_market_resolved(&env, state.market_id, report.outcome, oracle);
-        } else if conflicting_count > 0 && matching_count == 1 {
-            boxmeout_shared::emit_conflicting_oracle_report(&env, state.market_id, oracle);
+            let winning = if weight_a * 2 > total_weight {
+                Some(Outcome::FighterA)
+            } else if weight_b * 2 > total_weight {
+                Some(Outcome::FighterB)
+            } else if weight_draw * 2 > total_weight {
+                Some(Outcome::Draw)
+            } else if weight_nc * 2 > total_weight {
+                Some(Outcome::NoContest)
+            } else {
+                None
+            };
+
+            if let Some(winning_outcome) = winning {
+                // EFFECTS: commit resolution before any cross-contract interactions.
+                state.outcome = OptionalOutcome::Some(winning_outcome.clone());
+                state.status = MarketStatus::Resolved;
+                state.resolved_at = env.ledger().timestamp();
+                state.oracle_used = OptionalOracleRole::Some(OracleRole::Primary);
+                Self::save_state(&env, &state);
+                env.storage().persistent().set(
+                    &PENDING_REPORTS,
+                    &Map::<Address, OracleReport>::new(&env),
+                );
+                boxmeout_shared::emit_market_resolved(
+                    &env, state.market_id, winning_outcome.clone(), oracle,
+                );
+
+                // INTERACTIONS: slash dissenting oracles (best-effort — a failed
+                // slash must not revert the already-committed market resolution).
+                for (dis_oracle, dis_report) in pending.iter() {
+                    if dis_report.outcome != winning_outcome {
+                        // try_slash returns Err only on SDK-level errors; ignore both.
+                        let _ = registry.try_slash(&dis_oracle, &2000u32);
+                    }
+                }
+            }
+        } else {
+            // Fallback: flat 2-of-3 majority (no registry configured).
+            let mut matching_count = 1u32;
+            let mut conflicting_count = 0u32;
+
+            for (stored_oracle, stored_report) in pending.iter() {
+                if stored_oracle != oracle {
+                    if stored_report.outcome == report.outcome {
+                        matching_count += 1;
+                    } else {
+                        conflicting_count += 1;
+                    }
+                }
+            }
+
+            if matching_count >= 2 {
+                state.outcome = OptionalOutcome::Some(report.outcome.clone());
+                state.status = MarketStatus::Resolved;
+                state.resolved_at = env.ledger().timestamp();
+                state.oracle_used = OptionalOracleRole::Some(OracleRole::Primary);
+                Self::save_state(&env, &state);
+                env.storage().persistent().set(
+                    &PENDING_REPORTS,
+                    &Map::<Address, OracleReport>::new(&env),
+                );
+                boxmeout_shared::emit_market_resolved(
+                    &env, state.market_id, report.outcome, oracle,
+                );
+            } else if conflicting_count > 0 && matching_count == 1 {
+                boxmeout_shared::emit_conflicting_oracle_report(&env, state.market_id, oracle);
+            }
         }
 
         Ok(())
@@ -985,6 +1065,29 @@ impl Market {
     // =========================================================================
     // ADMIN CONFIG FUNCTIONS
     // =========================================================================
+
+    /// Sets the OracleRegistry contract address for this market.
+    /// Once set, resolve_market uses weighted reputation-based consensus
+    /// and calls back to OracleRegistry to slash dissenting oracles.
+    ///
+    /// # Errors
+    /// - `NotAdmin`: caller is not the factory (admin)
+    pub fn set_registry(
+        env: Env,
+        admin: Address,
+        registry: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let factory: Address = env
+            .storage().persistent()
+            .get(&FACTORY)
+            .ok_or(ContractError::NotFactory)?;
+        if admin != factory {
+            return Err(ContractError::NotAdmin);
+        }
+        env.storage().persistent().set(&REGISTRY, &registry);
+        Ok(())
+    }
 
     pub fn set_dispute_window(
         env: Env,

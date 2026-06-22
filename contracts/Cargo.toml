@@ -5,6 +5,7 @@ members = [
     "market_factory",
     "market",
     "governance",
+    "oracle_registry",
 ]
 resolver = "2"
 

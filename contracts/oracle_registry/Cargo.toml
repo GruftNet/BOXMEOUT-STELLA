@@ -1,0 +1,17 @@
+[package]
+name    = "boxmeout-oracle-registry"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils", "boxmeout-shared/testutils"]
+
+[dependencies]
+soroban-sdk     = { version = "20.0.0", features = ["alloc"] }
+boxmeout-shared = { path = "../shared" }
+
+[dev-dependencies]
+soroban-sdk = { version = "20.0.0", features = ["testutils"] }
