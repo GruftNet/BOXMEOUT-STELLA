@@ -106,4 +106,14 @@ pub enum ContractError {
     NoPathFound = 82,
     /// Token conversion failed
     ConversionFailed = 83,
+
+    // ── Price Validation ───────────────────────────────────
+    /// All submitted prices are older than the staleness threshold
+    StalePriceData = 90,
+    /// Fewer valid (fresh, non-outlier) price sources than required
+    InsufficientPriceSources = 91,
+    /// Multi-source price disagreement exceeds the deviation threshold
+    PriceDeviationExceeded = 92,
+    /// Submitted price failed basic sanity checks (e.g. non-positive)
+    InvalidPriceSubmission = 93,
 }

@@ -149,6 +149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxmeout-price-validator"
+version = "0.1.0"
+dependencies = [
+ "boxmeout-shared",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "boxmeout-shared"
 version = "0.1.0"
 dependencies = [
