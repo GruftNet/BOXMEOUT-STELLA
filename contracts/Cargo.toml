@@ -6,6 +6,7 @@ members = [
     "market",
     "governance",
     "oracle_registry",
+    "price_validator",
 ]
 resolver = "2"
 
