@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { getConnectedAddress } from '@/services/wallet';
 import { TxStatusToast } from '@/components/ui/TxStatusToast';
@@ -96,14 +96,14 @@ export default function CreateMarketPage() {
     }
   };
 
-  if (!connectedAddress) {
-    // Non-admin wallets redirect to home.
-    router.push('/');
-    return null;
-  }
+  // Redirect non-admin/unauthenticated users client-side only (avoids SSR location errors)
+  useEffect(() => {
+    if (!connectedAddress || !isAdmin) {
+      router.push('/');
+    }
+  }, [connectedAddress, isAdmin, router]);
 
-  if (!isAdmin) {
-    router.push('/');
+  if (!connectedAddress || !isAdmin) {
     return null;
   }
 

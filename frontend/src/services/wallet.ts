@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // ============================================================
 // BOXMEOUT — Wallet Service
 // Manages Freighter wallet connection and Stellar transactions.

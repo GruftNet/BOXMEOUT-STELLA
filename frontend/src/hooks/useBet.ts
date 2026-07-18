@@ -56,7 +56,7 @@ export function useBet(market: Market): UseBetResult {
     setIsSubmitting(true);
     setTxStatus({ hash: null, status: 'signing', error: null });
     try {
-      const hash = await submitBet(market.market_id, side, xlm);
+      const hash = await submitBet(market.market_id, side, xlm, 'XLM', xlm);
       setTxStatus({ hash, status: 'success', error: null });
     } catch (e: any) {
       const msg = e?.message ?? 'Transaction failed';

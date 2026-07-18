@@ -58,6 +58,11 @@ jest.mock('../ui/TxStatusToast', () => ({
 jest.mock('../ui/ConnectPrompt', () => ({
   ConnectPrompt: () => <div>Connect your wallet to place a bet</div>,
 }));
+jest.mock('../ui/ToastProvider', () => ({
+  useToast: () => ({
+    toast: jest.fn(),
+  }),
+}));
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

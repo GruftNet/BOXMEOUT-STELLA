@@ -4,8 +4,6 @@
 
 import { renderHook, waitFor } from '@testing-library/react';
 import { useMarket } from '../../hooks/useMarket';
-import { server } from '../mocks/handlers';
-import { openMarket, lockedMarket } from '../mocks/handlers';
 import { server } from '../../__tests__/mocks/handlers';
 import { openMarket, lockedMarket } from '../../__tests__/mocks/handlers';
 import { http, HttpResponse } from 'msw';
@@ -66,7 +64,7 @@ describe('useMarket', () => {
       });
 
       expect(result.current.market).toBeNull();
-      expect(result.current.error?.message).toContain('not found');
+      expect(result.current.error?.message).toContain('Not found');
     });
 
     it('should keep isLoading = false when error occurs', async () => {
@@ -492,7 +490,9 @@ describe('useMarket', () => {
       expect(market1Calls).toBe(market1CallsAtChange);
 
       // Market 2 should continue polling
-      expect(market2Calls).toBeGreaterThan(1);
+      await waitFor(() => {
+        expect(market2Calls).toBeGreaterThan(1);
+      });
     });
   });
 

@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useQuery } from '@tanstack/react-query';
-import { fetchOdds, type MarketOdds } from '../../lib/api';
+import { fetchOdds, type MarketOdds } from '../services/api';
 import type { MarketStatus } from '../types';
 
 const REFETCH_INTERVAL_MS = 5_000;
@@ -15,7 +15,7 @@ const TERMINAL_STATUSES: MarketStatus[] = ['resolved', 'cancelled'];
 
 export interface UseMarketOddsResult {
   odds: MarketOdds | null;
-  getOutcomeOdds(outcome: 'fighter_a' | 'fighter_b' | 'draw'): import('../../lib/api').OutcomeOdds | null;
+  getOutcomeOdds(outcome: 'fighter_a' | 'fighter_b' | 'draw'): import('../services/api').OutcomeOdds | null;
   isLoading: boolean;
   error: Error | null;
 }

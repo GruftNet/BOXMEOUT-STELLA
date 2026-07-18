@@ -5,7 +5,7 @@
 
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMarkets } from '../hooks/useMarkets';
 import { MarketCard } from '../components/market/MarketCard';
@@ -15,7 +15,7 @@ import { MarketFilters } from '../components/market/MarketFilters';
 
 const LIMIT = 12;
 
-export default function HomePage(): JSX.Element {
+function HomeContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -120,5 +120,25 @@ export default function HomePage(): JSX.Element {
         </div>
       )}
     </main>
+  );
+}
+
+export default function HomePage(): JSX.Element {
+  return (
+    <Suspense fallback={
+      <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-black text-white">BOXMEOUT</h1>
+          <p className="text-gray-400 text-sm mt-1">Decentralized boxing prediction markets on Stellar</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <MarketCardSkeleton key={i} />
+          ))}
+        </div>
+      </main>
+    }>
+      <HomeContent />
+    </Suspense>
   );
 }

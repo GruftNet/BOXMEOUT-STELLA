@@ -43,6 +43,8 @@ export function useMarkets(filters?: MarketFilters, pagination?: PaginationParam
       setError(null);
     } catch (e) {
       setError(e as Error);
+      setMarkets([]);
+      setTotal(0);
     } finally {
       setIsLoading(false);
     }

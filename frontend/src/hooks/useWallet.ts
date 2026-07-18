@@ -31,7 +31,7 @@ export function useWallet(): UseWalletResult {
     try {
       const address = await connectWallet();
       const balance = await getWalletBalance();
-      sessionStorage.setItem(STORAGE_KEY, address);
+      localStorage.setItem(STORAGE_KEY, address);
       setWallet(address, balance);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to connect wallet');
@@ -42,7 +42,7 @@ export function useWallet(): UseWalletResult {
 
   const disconnect = useCallback(() => {
     disconnectWallet();
-    sessionStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY);
     clearWallet();
   }, [clearWallet]);
 

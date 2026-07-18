@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback } from 'react';
+import { useCallback, Suspense } from 'react';
 import { useLeaderboard, type LeaderboardMetric } from '../../hooks/useLeaderboard';
 import { LeaderboardRow, LeaderboardRowSkeleton } from '../../components/ui/LeaderboardRow';
 import { PlatformStatsBanner } from '../../components/ui/PlatformStatsBanner';
@@ -14,7 +14,7 @@ const TABS: { key: LeaderboardMetric; label: string }[] = [
 
 const METRIC_PARAM = 'metric';
 
-export default function LeaderboardPage(): JSX.Element {
+function LeaderboardContent(): JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
   const metric = (searchParams.get(METRIC_PARAM) as LeaderboardMetric) || 'won';
@@ -93,5 +93,23 @@ export default function LeaderboardPage(): JSX.Element {
         )}
       </div>
     </main>
+  );
+}
+
+export default function LeaderboardPage(): JSX.Element {
+  return (
+    <Suspense fallback={
+      <main className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-black text-white">Leaderboard</h1>
+          <p className="text-gray-400 text-sm mt-1">Top bettors ranked by wins, activity, and win rate</p>
+        </div>
+        <div className="space-y-2">
+          {Array.from({ length: 10 }).map((_, i) => <LeaderboardRowSkeleton key={i} />)}
+        </div>
+      </main>
+    }>
+      <LeaderboardContent />
+    </Suspense>
   );
 }

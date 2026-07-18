@@ -167,3 +167,22 @@ export async function submitVote(
 export class AlreadyVotedError extends Error {
   constructor(message = 'Already voted') { super(message); this.name = 'AlreadyVotedError'; }
 }
+
+export interface OutcomeOdds {
+  probability: number;
+  payout_multiplier: number;
+}
+
+export interface MarketOdds {
+  fighter_a: OutcomeOdds;
+  fighter_b: OutcomeOdds;
+  draw: OutcomeOdds;
+}
+
+/**
+ * Calls GET /api/markets/:market_id/odds.
+ * Returns the live odds for each outcome.
+ */
+export async function fetchOdds(market_id: string): Promise<MarketOdds> {
+  return apiFetch<MarketOdds>(`/api/markets/${market_id}/odds`);
+}

@@ -9,14 +9,16 @@ import { useLeaderboard } from '../useLeaderboard';
 import { server, mockLeaderboard } from '../../__tests__/mocks/handlers';
 import { http, HttpResponse } from 'msw';
 
+import React from 'react';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
-function createWrapper(): ({ children }: { children: ReactNode }) => JSX.Element {
+function createWrapper(): ({ children }: { children: ReactNode }) => React.ReactElement {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    return React.createElement(QueryClientProvider, { client: queryClient }, children);
   };
 }
 

@@ -5,8 +5,7 @@
 
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import type { Market, MarketListResponse, LeaderboardEntry } from '../../types';
-import type { Market, Proposal } from '../../types';
+import type { Market, Proposal, LeaderboardEntry } from '../../types';
 import type { MarketListResponse, ProposalListResponse } from '../../services/api';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
