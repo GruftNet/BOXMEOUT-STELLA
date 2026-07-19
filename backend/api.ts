@@ -1,25 +1,21 @@
 /**
  * @file api.ts
  * @description Backend API for prediction market
+ *
+ * GraphQL query engine: `src/graphql/`
+ * - Schema + docs: `src/graphql/typeDefs.ts`, `src/graphql/SCHEMA.md`
+ * - DataLoaders: `src/graphql/dataloaders.ts`
+ * - Complexity / rate limits: `src/graphql/complexity.ts`, `src/graphql/rateLimit.ts`
+ * - Subscriptions (Redis): `src/graphql/pubsub.ts`
+ * - Mount helper: `mountGraphQL` from `src/graphql`
+ *
+ * Wired from `src/index.ts` at `POST /graphql` (subscriptions on `ws:///graphql`).
  */
 
 /**
- * Initialize and manage prediction market API endpoints
- * TODO: Setup Express/Fastify server
- * TODO: Create market endpoints (GET, POST, PUT, DELETE)
- * TODO: Implement user authentication and authorization
- * TODO: Create bet submission endpoints
- * TODO: Add market resolution endpoints
- * TODO: Implement dispute handling API
- * TODO: Create oracle price feed integration
- * TODO: Add websocket for real-time updates
- * TODO: Implement pagination for market listings
- * TODO: Add filtering and sorting for markets
- * TODO: Create balance and portfolio endpoints
- * TODO: Add analytics and history endpoints
- * TODO: Implement error handling and validation middleware
- * TODO: Setup database connection and migrations
+ * Initialize and manage prediction market API endpoints.
+ * Prefer `mountGraphQL(app, server)` from `./src/graphql` (used by `src/index.ts`).
  */
 export function initializePredictionMarketAPI(): void {
-  // Blueprint for API initialization
+  // GraphQL is mounted in src/index.ts via mountGraphQL().
 }
