@@ -90,3 +90,76 @@ CREATE TABLE IF NOT EXISTS notification_jobs (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   processed_at     TIMESTAMPTZ
 );
+
+-- ---------------------------------------------------------------------------
+-- Data retention subsystem (see backend/database/retention/).
+-- Kept in sync with migration 1724000000000_add-retention-tables.js; the
+-- integration suite bootstraps from this file, so a change here without the
+-- matching migration would let tests pass against a shape production never has.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS retention_policies (
+  id               SERIAL PRIMARY KEY,
+  data_class       TEXT        NOT NULL UNIQUE,
+  table_name       TEXT        NOT NULL,
+  timestamp_column TEXT        NOT NULL,
+  key_column       TEXT        NOT NULL DEFAULT 'id',
+  retention_days   INTEGER     NOT NULL CHECK (retention_days >= 30 AND retention_days <= 2555),
+  action           TEXT        NOT NULL CHECK (action IN ('archive_then_delete', 'anonymize_in_place', 'retain_forever')),
+  regime           TEXT        NOT NULL DEFAULT 'NONE',
+  pii_columns      TEXT[]      NOT NULL DEFAULT '{}'::TEXT[],
+  rationale        TEXT        NOT NULL DEFAULT '',
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by       TEXT        NOT NULL DEFAULT 'system'
+);
+
+CREATE TABLE IF NOT EXISTS retention_archive_manifest (
+  id                   SERIAL PRIMARY KEY,
+  data_class           TEXT        NOT NULL,
+  object_key           TEXT        NOT NULL UNIQUE,
+  checksum             TEXT        NOT NULL,
+  size_bytes           BIGINT      NOT NULL,
+  row_count            INTEGER     NOT NULL,
+  range_start          TIMESTAMPTZ NOT NULL,
+  range_end            TIMESTAMPTZ NOT NULL,
+  min_key              TEXT        NOT NULL,
+  max_key              TEXT        NOT NULL,
+  storage_class        TEXT        NOT NULL DEFAULT 'GLACIER_IR',
+  archived_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deletion_verified_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS retention_manifest_class_range_idx
+  ON retention_archive_manifest (data_class, range_start, range_end);
+CREATE INDEX IF NOT EXISTS retention_manifest_unverified_idx
+  ON retention_archive_manifest (archived_at) WHERE deletion_verified_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS retention_compliance_log (
+  id          SERIAL PRIMARY KEY,
+  action      TEXT        NOT NULL,
+  data_class  TEXT,
+  regime      TEXT        NOT NULL DEFAULT 'NONE',
+  row_count   INTEGER,
+  detail      JSONB       NOT NULL DEFAULT '{}'::JSONB,
+  actor       TEXT        NOT NULL,
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  prev_hash   TEXT,
+  entry_hash  TEXT        NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS retention_compliance_class_time_idx
+  ON retention_compliance_log (data_class, recorded_at);
+CREATE INDEX IF NOT EXISTS retention_compliance_time_idx
+  ON retention_compliance_log (recorded_at);
+
+CREATE OR REPLACE FUNCTION retention_compliance_log_append_only()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'retention_compliance_log is append-only; % is not permitted', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS retention_compliance_log_no_mutate ON retention_compliance_log;
+CREATE TRIGGER retention_compliance_log_no_mutate
+  BEFORE UPDATE OR DELETE ON retention_compliance_log
+  FOR EACH ROW EXECUTE FUNCTION retention_compliance_log_append_only();
