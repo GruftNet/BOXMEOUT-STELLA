@@ -10,6 +10,7 @@
     "migrate": "drizzle-kit migrate",
     "migrate:down": "node-pg-migrate down",
     "migrate:create": "node-pg-migrate create",
+    "migrate:zt": "node migration-runner.js",
     "test": "jest --passWithNoTests",
     "test:integration": "jest --passWithNoTests --testPathPatterns=tests/integration"
   },
