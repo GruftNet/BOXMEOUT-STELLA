@@ -19,6 +19,18 @@ jest.mock('../../services/wallet', () => ({
   getWalletBalance: () => mockGetWalletBalance(),
 }));
 
+// Analytics mocks — fire-and-forget, suppress in hook unit tests
+jest.mock('../../lib/analytics', () => ({
+  hashAddress: jest.fn(async (a: string) => a.slice(0, 16)),
+  identifyUser: jest.fn(),
+  resetIdentity: jest.fn(),
+}));
+jest.mock('../../services/analytics.service', () => ({
+  trackWalletConnected: jest.fn(),
+  trackWalletDisconnected: jest.fn(),
+  trackWalletConnectionFailed: jest.fn(),
+}));
+
 const STORAGE_KEY = 'boxmeout_wallet_address';
 
 describe('useWallet', () => {

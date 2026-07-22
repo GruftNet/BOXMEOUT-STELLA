@@ -6,6 +6,11 @@ import { useWallet } from '../../hooks/useWallet';
 import { useClaimWinnings } from '../../hooks/useClaimWinnings';
 import { TransactionStatus } from '../ui/TransactionStatus';
 import { stellarExplorerUrl } from '../../services/wallet';
+import {
+  trackClaimInitiated,
+  trackClaimSuccess,
+  trackClaimFailed,
+} from '../../services/analytics.service';
 
 function formatXlm(amount: number | null | undefined): string {
   if (amount == null || Number.isNaN(amount)) return '—';
@@ -57,6 +62,22 @@ export function ClaimWinningsPanel({ market, allBets }: ClaimWinningsPanelProps)
 
   const success = txStatus.status === 'success';
   const isPending = ['signing', 'broadcasting', 'confirming'].includes(txStatus.status);
+
+  // Analytics: fire success/failure when txStatus transitions
+  useEffect(() => {
+    const base = {
+      market_id: market.market_id,
+      fighter_a: market.fighter_a,
+      fighter_b: market.fighter_b,
+      projected_payout_xlm: projectedPayout,
+    };
+    if (txStatus.status === 'success' && txStatus.hash) {
+      trackClaimSuccess({ ...base, tx_hash: txStatus.hash });
+    } else if (txStatus.status === 'error' && txStatus.error) {
+      trackClaimFailed({ ...base, error: txStatus.error });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txStatus.status]);
 
   // Reset error/success if market changes away from resolved.
   useEffect(() => {
@@ -111,7 +132,15 @@ export function ClaimWinningsPanel({ market, allBets }: ClaimWinningsPanelProps)
         {!success ? (
           <button
             disabled={!canClaim}
-            onClick={() => claimWinnings(market.market_id)}
+            onClick={() => {
+              trackClaimInitiated({
+                market_id: market.market_id,
+                fighter_a: market.fighter_a,
+                fighter_b: market.fighter_b,
+                projected_payout_xlm: projectedPayout,
+              });
+              claimWinnings(market.market_id);
+            }}
             className="w-full min-h-[44px] rounded-xl bg-amber-500 hover:bg-amber-400 font-semibold text-black disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isPending ? 'Claiming…' : 'Claim winnings'}

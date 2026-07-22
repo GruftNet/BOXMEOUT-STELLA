@@ -14,6 +14,7 @@ import { fetchBetsByMarket, NotFoundError } from '../../../services/api';
 import { ClaimWinningsPanel } from '../../../components/market/ClaimWinningsPanel';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { useAppStore } from '../../../store';
+import { trackMarketViewed } from '../../../services/analytics.service';
 import type { Bet } from '../../../types';
 
 export default function MarketDetailContent({ market_id }: { market_id: string }): JSX.Element {
@@ -32,6 +33,17 @@ export default function MarketDetailContent({ market_id }: { market_id: string }
         /* non-critical */
       })
       .finally(() => setBetsLoading(false));
+
+    // Track market view
+    trackMarketViewed({
+      market_id: market.market_id,
+      fighter_a: market.fighter_a,
+      fighter_b: market.fighter_b,
+      weight_class: market.weight_class,
+      market_status: market.status,
+      total_pool_xlm: parseInt(market.total_pool, 10) / 1e7,
+      title_fight: market.title_fight,
+    });
 
     if (market.status === 'locked') {
       toast.info('Market is now locked — no new bets accepted.');

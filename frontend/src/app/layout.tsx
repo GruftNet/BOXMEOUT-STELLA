@@ -8,6 +8,7 @@ import { Inter } from 'next/font/google';
 import { Header } from '../components/layout/Header';
 import { QueryProvider } from '../providers/QueryProvider';
 import { ToastProvider } from '../components/ui/ToastProvider';
+import { AnalyticsProvider } from '../providers/AnalyticsProvider';
 import './globals.css';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -37,10 +38,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }):
       </head>
       <body className="bg-gray-950 dark:bg-gray-950 text-white dark:text-white min-h-screen">
         <QueryProvider>
-          <ToastProvider>
-            <Header />
-            {children}
-          </ToastProvider>
+          <AnalyticsProvider>
+            <ToastProvider>
+              <Header />
+              {children}
+            </ToastProvider>
+          </AnalyticsProvider>
         </QueryProvider>
       </body>
     </html>

@@ -12,6 +12,7 @@ import { useMarkets } from '../../hooks/useMarkets';
 import { ConnectPrompt } from '../../components/ui/ConnectPrompt';
 import { BetHistoryTable } from '../../components/bet/BetHistoryTable';
 import { useToast } from '../../components/ui/ToastProvider';
+import { trackPortfolioViewed, trackClaimAllInitiated } from '../../services/analytics.service';
 import type { Bet } from '../../types';
 
 // ─── BettorStats ─────────────────────────────────────────────────────────────
@@ -71,8 +72,8 @@ export default function PortfolioPage(): JSX.Element {
   const handleClaimAll = useCallback(async () => {
     if (!portfolio || claimingAll) return;
     setClaimingAll(true);
-    // Deduplicate by market_id — one tx per claimable market
     const uniqueMarkets = [...new Set(portfolio.pending_claims.map((b) => b.market_id))];
+    trackClaimAllInitiated({ market_count: uniqueMarkets.length });
     for (const market_id of uniqueMarkets) {
       await claimWinnings(market_id);
     }
@@ -87,6 +88,20 @@ export default function PortfolioPage(): JSX.Element {
       toast.error(claimTxStatus.error ?? 'Claim failed. Please try again.');
     }
   }, [claimTxStatus.status]);
+
+  // Analytics: track portfolio viewed once data loads
+  useEffect(() => {
+    if (!portfolio || isLoading) return;
+    trackPortfolioViewed({
+      total_bets: allBets.length,
+      active_bets: portfolio.active_bets.length,
+      pending_claims: portfolio.pending_claims.length,
+      total_staked_xlm: portfolio.total_staked_xlm,
+      total_won_xlm: portfolio.total_won_xlm,
+      total_lost_xlm: portfolio.total_lost_xlm,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]);
 
   if (!isConnected) {
     return (
