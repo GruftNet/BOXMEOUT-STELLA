@@ -58,6 +58,18 @@ jest.mock('../ui/TxStatusToast', () => ({
 jest.mock('../ui/ConnectPrompt', () => ({
   ConnectPrompt: () => <div>Connect your wallet to place a bet</div>,
 }));
+jest.mock('../ui/ToastProvider', () => ({
+  useToast: () => ({ success: jest.fn(), error: jest.fn(), info: jest.fn() }),
+}));
+// Analytics — fire-and-forget, suppress in tests
+jest.mock('../../services/analytics.service', () => ({
+  trackBetSideSelected: jest.fn(),
+  trackBetAmountEntered: jest.fn(),
+  trackBetConfirmOpened: jest.fn(),
+  trackBetConfirmCancelled: jest.fn(),
+  trackBetPlaced: jest.fn(),
+  trackBetFailed: jest.fn(),
+}));
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@ import { useRouter } from 'next/navigation';
 import { nativeToScVal, Address, xdr } from '@stellar/stellar-sdk';
 import type { TxStatus } from '../types';
 import type { CreateMarketParams } from '../services/wallet';
-import { buildContractTransaction, submitTransaction, NETWORK_PASSPHRASE } from '../../lib/stellar';
+import { buildContractTransaction, submitTransaction, NETWORK_PASSPHRASE } from '../lib/stellar';
 import { getConnectedAddress } from '../services/wallet';
 
 export interface UseCreateMarketResult {

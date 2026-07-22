@@ -19,6 +19,18 @@ jest.mock('../../services/wallet', () => ({
   getWalletBalance: () => mockGetWalletBalance(),
 }));
 
+// Analytics mocks — fire-and-forget, suppress in hook unit tests
+jest.mock('../../lib/analytics', () => ({
+  hashAddress: jest.fn(async (a: string) => a.slice(0, 16)),
+  identifyUser: jest.fn(),
+  resetIdentity: jest.fn(),
+}));
+jest.mock('../../services/analytics.service', () => ({
+  trackWalletConnected: jest.fn(),
+  trackWalletDisconnected: jest.fn(),
+  trackWalletConnectionFailed: jest.fn(),
+}));
+
 const STORAGE_KEY = 'boxmeout_wallet_address';
 
 describe('useWallet', () => {
@@ -111,7 +123,8 @@ describe('useWallet', () => {
 
       await act(async () => { await result.current.connect(); });
 
-      expect(localStorage.getItem(STORAGE_KEY)).toBe('GABC123');
+      // useWallet stores the address in sessionStorage (persists for the tab session)
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBe('GABC123');
     });
 
     it('sets error and clears isConnecting on connect failure', async () => {
@@ -150,7 +163,8 @@ describe('useWallet', () => {
 
       act(() => { result.current.disconnect(); });
 
-      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      // useWallet stores in sessionStorage; verify it is cleared on disconnect
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
     });
 
     it('calls disconnectWallet service on disconnect', async () => {

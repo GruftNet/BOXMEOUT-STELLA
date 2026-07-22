@@ -9,6 +9,14 @@ import { TxStatusToast } from '../ui/TxStatusToast';
 import { ConnectPrompt } from '../ui/ConnectPrompt';
 import { useAppStore } from '../../store';
 import { useToast } from '../ui/ToastProvider';
+import {
+  trackBetSideSelected,
+  trackBetAmountEntered,
+  trackBetConfirmOpened,
+  trackBetConfirmCancelled,
+  trackBetPlaced,
+  trackBetFailed,
+} from '../../services/analytics.service';
 
 interface BetPanelProps {
   market: Market;
@@ -31,6 +39,14 @@ export function BetPanel({ market }: BetPanelProps): JSX.Element {
   const isAmountValid = !isNaN(amountNum) && amountNum > 0;
   const canSubmit = isConnected && !!side && isAmountValid && !isSubmitting && market.status === 'open';
 
+  // ── Analytics helpers ─────────────────────────────────────
+  const analyticsBase = {
+    market_id: market.market_id,
+    fighter_a: market.fighter_a,
+    fighter_b: market.fighter_b,
+    weight_class: market.weight_class,
+  };
+
   if (!isConnected) {
     return <ConnectPrompt />;
   }
@@ -51,7 +67,10 @@ export function BetPanel({ market }: BetPanelProps): JSX.Element {
         {SIDES.map(({ value, label }) => (
           <button
             key={value}
-            onClick={() => setSide(value)}
+            onClick={() => {
+              setSide(value);
+              trackBetSideSelected({ ...analyticsBase, side: value });
+            }}
             className={`flex-1 min-h-[44px] rounded-lg text-sm font-semibold transition-colors ${
               side === value
                 ? 'bg-amber-500 text-black'
@@ -72,6 +91,16 @@ export function BetPanel({ market }: BetPanelProps): JSX.Element {
           step="0.01"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
+          onBlur={() => {
+            if (side && isAmountValid) {
+              trackBetAmountEntered({
+                ...analyticsBase,
+                side,
+                amount_xlm: amountNum,
+                estimated_payout_xlm: estimatedPayout ?? 0,
+              });
+            }
+          }}
           placeholder="0.00"
           className="w-full bg-gray-800 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
         />
@@ -93,7 +122,18 @@ export function BetPanel({ market }: BetPanelProps): JSX.Element {
       {/* Submit */}
       <button
         disabled={!canSubmit}
-        onClick={() => setShowModal(true)}
+        onClick={() => {
+          setShowModal(true);
+          if (side && isAmountValid) {
+            trackBetConfirmOpened({
+              ...analyticsBase,
+              side,
+              amount_xlm: amountNum,
+              estimated_payout_xlm: estimatedPayout ?? 0,
+              fee_bps: market.fee_bps,
+            });
+          }
+        }}
         className="w-full min-h-[44px] rounded-lg bg-amber-500 hover:bg-amber-400 font-semibold text-black disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {isSubmitting ? 'Placing Bet…' : 'Place Bet'}
@@ -107,16 +147,34 @@ export function BetPanel({ market }: BetPanelProps): JSX.Element {
         amount_xlm={amountNum || 0}
         estimated_payout_xlm={estimatedPayout ?? 0}
         fee_bps={market.fee_bps}
-        onCancel={() => setShowModal(false)}
+        onCancel={() => {
+          setShowModal(false);
+          if (side) trackBetConfirmCancelled({ ...analyticsBase, side });
+        }}
         onConfirm={async () => {
           setShowModal(false);
           await submitBet();
           if (txStatus.status === 'success' && txStatus.hash) {
+            trackBetPlaced({
+              ...analyticsBase,
+              side: side ?? 'fighter_a',
+              amount_xlm: amountNum,
+              estimated_payout_xlm: estimatedPayout ?? 0,
+              tx_hash: txStatus.hash,
+              fee_bps: market.fee_bps,
+            });
             toast.success(
               `Bet placed! TX: ${txStatus.hash.slice(0, 8)}… — ` +
               `View on Explorer`,
             );
           } else if (txStatus.status === 'error') {
+            trackBetFailed({
+              ...analyticsBase,
+              side: side ?? 'fighter_a',
+              amount_xlm: amountNum,
+              error: txStatus.error ?? 'Transaction failed',
+              stage: 'signing',
+            });
             toast.error(txStatus.error ?? 'Transaction failed');
           }
         }}

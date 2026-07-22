@@ -2,6 +2,7 @@ import { TextEncoder, TextDecoder } from 'util';
 
 Object.assign(global, { TextEncoder, TextDecoder });
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { JSDOM } = require('jsdom');
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
   url: 'http://localhost',
