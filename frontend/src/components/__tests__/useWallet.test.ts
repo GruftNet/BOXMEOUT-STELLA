@@ -123,7 +123,8 @@ describe('useWallet', () => {
 
       await act(async () => { await result.current.connect(); });
 
-      expect(localStorage.getItem(STORAGE_KEY)).toBe('GABC123');
+      // useWallet stores the address in sessionStorage (persists for the tab session)
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBe('GABC123');
     });
 
     it('sets error and clears isConnecting on connect failure', async () => {
@@ -162,7 +163,8 @@ describe('useWallet', () => {
 
       act(() => { result.current.disconnect(); });
 
-      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      // useWallet stores in sessionStorage; verify it is cleared on disconnect
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
     });
 
     it('calls disconnectWallet service on disconnect', async () => {

@@ -5,9 +5,12 @@
 // Initialises the analytics SDK once on mount and fires a
 // page_viewed event on every Next.js client-side navigation.
 // Mount this inside RootLayout, *inside* QueryProvider so hooks work.
+//
+// useSearchParams() is wrapped in Suspense as required by Next.js 14
+// to avoid prerender errors during static generation.
 // ============================================================
 
-import { useEffect, ReactNode } from 'react';
+import { useEffect, ReactNode, Suspense } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { initAnalytics } from '../lib/analytics';
 import { trackAppBooted, trackPageView } from '../services/analytics.service';
@@ -45,7 +48,9 @@ function AnalyticsInit(): null {
 export function AnalyticsProvider({ children }: AnalyticsProviderProps): JSX.Element {
   return (
     <>
-      <AnalyticsInit />
+      <Suspense fallback={null}>
+        <AnalyticsInit />
+      </Suspense>
       {children}
     </>
   );

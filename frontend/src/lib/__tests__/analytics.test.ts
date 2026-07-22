@@ -34,7 +34,7 @@ describe('hashAddress', () => {
     Object.defineProperty(global, 'crypto', {
       value: {
         subtle: {
-          digest: async (_algo: string, buf: ArrayBuffer) => {
+          digest: async (_algo: string, _buf: ArrayBuffer) => {
             // Return a fixed 32-byte buffer
             return new Uint8Array(32).fill(0xab).buffer;
           },

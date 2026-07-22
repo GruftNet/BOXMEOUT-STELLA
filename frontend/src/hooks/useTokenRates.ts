@@ -11,8 +11,7 @@ export interface ApprovedToken {
   max_slippage_bps: number;
 }
 
-export interface TokenRate {
-  token: string;
+export interface TokenRate {  token: string;
   symbol: string;
   xlm_equivalent: number;
   rate: number; // token per XLM
@@ -107,7 +106,7 @@ export function useTokenRates(amount: number = 10000000) { // Default 10 XLM in 
 /**
  * Get the approved tokens list
  */
-export function getApprovedTokens(): ApprovedToken {
+export function getApprovedTokens(): ApprovedToken[] {
   return APPROVED_TOKENS;
 }
 

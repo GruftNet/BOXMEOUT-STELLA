@@ -2,7 +2,7 @@
  * Unit tests for useMarkets hook using @testing-library/react and MSW.
  */
 
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { useMarkets } from '../../hooks/useMarkets';
 import { server } from '../../__tests__/mocks/handlers';
 import { mockMarkets } from '../../__tests__/mocks/handlers';
@@ -111,10 +111,7 @@ describe('useMarkets', () => {
     });
 
     it('should clear previous data on error', async () => {
-      const { result, rerender } = renderHook(
-        ({ filters }) => useMarkets(filters),
-        { initialProps: { filters: undefined } }
-      );
+      const { result } = renderHook(() => useMarkets());
 
       await waitFor(() => {
         expect(result.current.markets).toHaveLength(mockMarkets.length);
@@ -129,7 +126,8 @@ describe('useMarkets', () => {
         })
       );
 
-      rerender({ filters: undefined });
+      // Trigger a manual refetch so the new error handler fires
+      act(() => { result.current.refetch(); });
 
       await waitFor(() => {
         expect(result.current.error).not.toBeNull();

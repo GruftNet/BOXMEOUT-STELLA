@@ -39,10 +39,15 @@ jest.mock('../market/MarketOddsBar', () => ({
   MarketOddsBar: () => <div data-testid="odds-bar" />,
 }));
 
-// Mock CountdownTimer — control output per test
-const mockCountdownState = jest.fn<string, []>();
-jest.mock('../../hooks/useMarketCountdown', () => ({
-  useMarketCountdown: () => mockCountdownState(),
+// Mock CountdownTimer — control output per test so tests are not time-dependent
+const mockCountdownDisplay = jest.fn<string, []>(() => '2h 30m 00s');
+jest.mock('../ui/CountdownTimer', () => ({
+  CountdownTimer: ({ label }: { label?: string }) => (
+    <span>
+      {label && <span>{label}</span>}
+      <span>{mockCountdownDisplay()}</span>
+    </span>
+  ),
 }));
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -75,7 +80,7 @@ function makeMarket(overrides: Partial<Market> = {}): Market {
 
 describe('MarketCard', () => {
   beforeEach(() => {
-    mockCountdownState.mockReturnValue('2h 30m 00s');
+    mockCountdownDisplay.mockReturnValue('2h 30m 00s');
   });
 
   describe('fighter names', () => {
@@ -118,20 +123,20 @@ describe('MarketCard', () => {
 
   describe('countdown timer', () => {
     it('shows countdown label with time remaining', () => {
-      mockCountdownState.mockReturnValue('2h 30m 00s');
+      mockCountdownDisplay.mockReturnValue('2h 30m 00s');
       render(<MarketCard market={makeMarket()} />);
       expect(screen.getByText(/starts in/i)).toBeInTheDocument();
       expect(screen.getByText(/2h 30m 00s/i)).toBeInTheDocument();
     });
 
     it('shows LIVE badge when fight has started', () => {
-      mockCountdownState.mockReturnValue('LIVE');
+      mockCountdownDisplay.mockReturnValue('LIVE');
       render(<MarketCard market={makeMarket()} />);
       expect(screen.getByText('LIVE')).toBeInTheDocument();
     });
 
     it('shows ENDED when fight is over', () => {
-      mockCountdownState.mockReturnValue('ENDED');
+      mockCountdownDisplay.mockReturnValue('ENDED');
       render(<MarketCard market={makeMarket()} />);
       expect(screen.getByText('ENDED')).toBeInTheDocument();
     });

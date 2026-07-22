@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import type { BetSide, Market } from '../../types';
 import { usePlaceBet } from '../../hooks/usePlaceBet';
-import { useTokenRates, APPROVED_TOKENS, type TokenRate } from '../../hooks/useTokenRates';
+import { useTokenRates, APPROVED_TOKENS } from '../../hooks/useTokenRates';
 import { useWallet } from '../../hooks/useWallet';
 import { ConnectPrompt } from '../ui/ConnectPrompt';
 import { TxStatusToast } from '../ui/TxStatusToast';

@@ -65,7 +65,7 @@ export function initAnalytics(): void {
   }
 
   // Dynamically import so the ~90 kB Mixpanel bundle only loads client-side.
-  import('mixpanel-browser' as any).then((mod) => {
+  import('mixpanel-browser').then((mod) => {
     const mp = (mod.default ?? mod) as MixpanelLib;
     mp.init(token, {
       // Privacy: never capture raw IP
